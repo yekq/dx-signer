@@ -11,21 +11,22 @@ repositories {
 }
 
 dependencies {
-    compile fileTree(dir: 'lib', include: ['*.jar'])
-    compile 'org.slf4j:slf4j-api:1.7.30'
-    compile 'com.meituan.android.walle:payload_writer:1.1.7'
-    compile 'org.json:json:20231013'
-    compile 'org.slf4j:slf4j-simple:1.7.30'
-    compile 'com.intellij:forms_rt:7.0.3'
+    implementation fileTree(dir: 'lib', include: ['*.jar'])
+    implementation 'com.google.guava:guava:28.2-jre'
+    implementation 'org.slf4j:slf4j-api:1.7.30'
+    implementation 'com.meituan.android.walle:payload_writer:1.1.7'
+    implementation 'org.json:json:20231013'
+    implementation 'org.slf4j:slf4j-simple:1.7.30'
+    implementation 'com.intellij:forms_rt:7.0.3'
 }
 
-task fatJar(type: Jar, dependsOn: jar) {
+task fatJar(type: Jar) {
+    manifest {
+        attributes 'Implementation-Title': 'dx signer', 'Main-Class': 'dx.signer.UX'
+    }
     baseName = 'dx-signer'
 
-    def deps = configurations.runtime
-
-    def depClasses = { deps.collect { it.isDirectory() ? it : zipTree(it) } }
-
+    def depClasses = { configurations.compileClasspath.collect { it.isDirectory() ? it : zipTree(it) } }
     from(depClasses) {
         exclude 'META-INF/*.MF'
         exclude 'META-INF/*.SF'
@@ -34,11 +35,5 @@ task fatJar(type: Jar, dependsOn: jar) {
         exclude '**/*.html'
         exclude 'META-INF/maven/**'
     }
-
-    manifest {
-        attributes 'Implementation-Title': 'dx signer',
-                'Main-Class': 'dx.signer.UX'
-    }
-
-    from(sourceSets.main.output)
+    with jar
 }

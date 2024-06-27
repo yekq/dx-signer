@@ -19,24 +19,54 @@ package dx.signer;
 
 import com.intellij.uiDesigner.core.GridConstraints;
 import com.intellij.uiDesigner.core.GridLayoutManager;
-import dx.channel.ApkSigns;
+
 import org.slf4j.impl.SimpleLogger;
 
-import javax.swing.*;
-import javax.swing.event.PopupMenuEvent;
-import javax.swing.event.PopupMenuListener;
-import javax.swing.filechooser.FileFilter;
-import javax.swing.text.DefaultCaret;
-import java.awt.*;
-import java.io.*;
+import java.awt.Component;
+import java.awt.Container;
+import java.awt.Dimension;
+import java.awt.Font;
+import java.awt.Insets;
+import java.awt.Toolkit;
+import java.io.BufferedWriter;
+import java.io.File;
+import java.io.IOException;
 import java.nio.charset.StandardCharsets;
 import java.nio.file.Files;
 import java.nio.file.Path;
 import java.nio.file.Paths;
 import java.security.KeyStore;
-import java.util.*;
+import java.util.Enumeration;
+import java.util.HashSet;
+import java.util.Properties;
+import java.util.Set;
 import java.util.concurrent.ExecutorService;
 import java.util.concurrent.Executors;
+
+import javax.swing.JButton;
+import javax.swing.JCheckBox;
+import javax.swing.JComboBox;
+import javax.swing.JComponent;
+import javax.swing.JFileChooser;
+import javax.swing.JFrame;
+import javax.swing.JLabel;
+import javax.swing.JOptionPane;
+import javax.swing.JPanel;
+import javax.swing.JPasswordField;
+import javax.swing.JProgressBar;
+import javax.swing.JScrollPane;
+import javax.swing.JTabbedPane;
+import javax.swing.JTextArea;
+import javax.swing.JTextField;
+import javax.swing.SwingUtilities;
+import javax.swing.UIManager;
+import javax.swing.event.PopupMenuEvent;
+import javax.swing.event.PopupMenuListener;
+import javax.swing.filechooser.FileFilter;
+import javax.swing.plaf.FontUIResource;
+import javax.swing.text.DefaultCaret;
+
+import dx.channel.ApkSigns;
 
 public class UX {
     ExecutorService es = Executors.newSingleThreadExecutor();
@@ -52,7 +82,7 @@ public class UX {
     private JComboBox keyAliasCB;
     private JPasswordField keyPassPF;
     private JPasswordField ksPassPF;
-    public JPanel top;
+    public JPanel topPanel;
     private JProgressBar progressBar1;
     private JTextField channelPathTF;
     private JButton channelBtn;
@@ -61,6 +91,8 @@ public class UX {
 
     private boolean readOnly = false;
     private String inputFileName = "";
+
+    private SignerConfigBean configBean;
 
     public static void main(String[] args) throws IOException {
 
@@ -73,20 +105,15 @@ public class UX {
         }
 
         JFrame frame = new JFrame("Apk签名&多渠道工具");
-        frame.setContentPane(new UX().top);
+        frame.setContentPane(new UX().topPanel);
         frame.setDefaultCloseOperation(JFrame.EXIT_ON_CLOSE);
+
         frame.pack();
 
         // make the frame half the height and width
         Dimension screenSize = Toolkit.getDefaultToolkit().getScreenSize();
-        int width1 = screenSize.width / 2;
-        int height1 = screenSize.height / 2;
-
-
-        width1 = 900;
-        if (height1 < 600) {
-            height1 = 600;
-        }
+        int width1 = screenSize.width * 3 / 4;
+        int height1 = screenSize.height * 3 / 4;
 
         frame.setSize(width1, height1);
 
@@ -98,9 +125,14 @@ public class UX {
 
 
     public UX() {
+        loadLocalConfig();
+
         JFileChooser fileChooser = new JFileChooser();
-        fileChooser.setCurrentDirectory(new File("."));
+        fileChooser.setCurrentDirectory(new File(configBean.getIn()));
         fileChooser.setFileSelectionMode(JFileChooser.FILES_ONLY);
+        fileChooser.setPreferredSize(new Dimension(1280, 960));
+        // Enable the address bar for input
+        fileChooser.setControlButtonsAreShown(true);
         fileChooser.setMultiSelectionEnabled(false);
 
         inBtn.addActionListener(e -> {
@@ -120,7 +152,6 @@ public class UX {
             if (result == JFileChooser.APPROVE_OPTION) {
                 File file = fileChooser.getSelectedFile();
                 setInput(file);
-
             }
         });
         ksBtn.addActionListener(e -> {
@@ -163,114 +194,7 @@ public class UX {
             }
         });
 
-        signBtn.addActionListener(e -> {
-            String channelPath = channelPathTF.getText();
-
-            String out = outPathTF.getText();
-
-            if (channelPath != null && channelPath.length() > 0) {
-                Path apkDir = CommandLine.detectOutDir(out);
-                if (Files.exists(apkDir)) {
-                    if (JOptionPane.YES_OPTION != JOptionPane.showConfirmDialog(UX.this.top, "多渠道输出APK目录已经存在，是否覆盖:\n" + apkDir, "输出APK已经存在，是否覆盖", JOptionPane.OK_CANCEL_OPTION)) {
-                        return;
-                    }
-                }
-            } else {
-                if (JOptionPane.YES_OPTION != JOptionPane.showConfirmDialog(UX.this.top, "输出APK已经存在，是否覆盖:\n" + out, "输出APK已经存在，是否覆盖", JOptionPane.OK_CANCEL_OPTION)) {
-                    return;
-                }
-            }
-
-            signBtn.setEnabled(false);
-
-            String in = inPathTF.getText();
-
-            String ksPass;
-            String keyPass;
-            try {
-                ksPass = new String(ksPassPF.getPassword());
-            } catch (NullPointerException ignore) {
-                ksPass = "";
-            }
-            try {
-                keyPass = new String(UX.this.keyPassPF.getPassword());
-            } catch (NullPointerException ignore) {
-                keyPass = null;
-            }
-            String keyAlias = (String) UX.this.keyAliasCB.getSelectedItem();
-            Properties mConfig = new Properties();
-            String ksPath0 = ksPathTF.getText();
-            mConfig.put("ks", ksPath0);
-            mConfig.put("in", in);
-            mConfig.put("ks-key-alias", keyAlias);
-            mConfig.put("in-filename", this.inputFileName);
-            mConfig.put("out", this.outPathTF.getText());
-            mConfig.put("channel-list", this.channelPathTF.getText());
-
-            if (保存密码CheckBox.isSelected()) {
-                mConfig.put("ks-pass", ksPass);
-                mConfig.put("key-pass", keyPass);
-            }
-
-            if (!readOnly) {
-                try {
-                    Path configFile = getConfigPath();
-                    try (BufferedWriter r = Files.newBufferedWriter(configFile, StandardCharsets.UTF_8)) {
-                        mConfig.store(r, "#");
-                    }
-                } catch (IOException ignore) {
-                }
-            }
-
-            loggingTA.setText("");
-
-            String finalKsPass = ksPass;
-            String finalKeyPass = keyPass;
-            String pbOrg = progressBar1.getString();
-            progressBar1.setString("签名中...");
-            progressBar1.setStringPainted(true);
-            progressBar1.setIndeterminate(true);
-
-            Path ksPath = Paths.get(ksPath0);
-            Path input = Paths.get(in);
-
-            es.submit(() -> {
-                try {
-                    int result;
-
-                    if (channelPath != null && channelPath.length() > 0) {
-                        Path apkDir = CommandLine.detectOutDir(out);
-                        result = SignWorker.signChannelApk(input, inputFileName,
-                                apkDir,
-                                Paths.get(channelPath),
-                                ksPath, finalKsPass, keyAlias, finalKeyPass);
-                        progressBar1.setIndeterminate(false);
-                        progressBar1.setString(pbOrg);
-                        if (result == 0) {
-                            JOptionPane.showMessageDialog(UX.this.top, "多渠道成功, 输出APK文件夹\n" + apkDir);
-                        } else {
-                            JOptionPane.showMessageDialog(UX.this.top, "多渠道失败");
-                        }
-                    } else {
-                        result = SignWorker.signApk(input, Paths.get(out), ksPath,
-                                finalKsPass, keyAlias, finalKeyPass);
-                        progressBar1.setIndeterminate(false);
-                        progressBar1.setString(pbOrg);
-                        if (result == 0) {
-                            JOptionPane.showMessageDialog(UX.this.top, "签名成功, 输出APK\n" + out);
-                        } else {
-                            JOptionPane.showMessageDialog(UX.this.top, "签名失败");
-                        }
-                    }
-
-                } catch (Exception ex) {
-                    ex.printStackTrace();
-                }
-
-                signBtn.setEnabled(true);
-            });
-
-        });
+        signBtn.addActionListener(e -> onSubmitClick());
 
         keyAliasCB.removeAllItems();
         keyAliasCB.addItem("{{auto}}");
@@ -320,34 +244,6 @@ public class UX {
 
         JTextAreaOutputStream.hijack(loggingTA);
 
-        try {
-            Path configFile = getConfigPath();
-            Properties initConfig = CommandLine.load(configFile);
-
-            readOnly = "true".equals(initConfig.getProperty("config-read-only", ""));
-            ksPathTF.setText(initConfig.getProperty("ks", ""));
-
-            String inPath = initConfig.getProperty("in", "");
-            if (inPath.length() > 0) {
-                setInput(new File(inPath), initConfig.getProperty("in-filename", ""));
-            }
-            String outPath = initConfig.getProperty("out", "");
-            if (outPath.length() > 0) {
-                outPathTF.setText(outPath);
-            }
-            ksPassPF.setText(initConfig.getProperty("ks-pass", ""));
-            keyPassPF.setText(initConfig.getProperty("key-pass", ""));
-            channelPathTF.setText(initConfig.getProperty("channel-list", ""));
-
-            String s = initConfig.getProperty("ks-key-alias", "{{auto}}");
-            if (!s.equals("{{auto}}") && s.length() != 0) {
-                keyAliasCB.addItem(s);
-                keyAliasCB.setSelectedItem(s);
-            }
-
-        } catch (IOException ignore) {
-        }
-
         if (readOnly) {
             保存密码CheckBox.setEnabled(false);
             保存密码CheckBox.setSelected(false);
@@ -368,6 +264,151 @@ public class UX {
         }
     }
 
+    private void onSubmitClick() {
+        String channelPath = channelPathTF.getText();
+
+        String out = outPathTF.getText();
+        Path outApkDir = CommandLine.detectOutDir(out);
+        File file = outApkDir.toFile();
+        if (channelPath != null && !channelPath.isEmpty()) {
+            if (Files.exists(outApkDir)) {
+                if (JOptionPane.YES_OPTION != JOptionPane.showConfirmDialog(topPanel, "多渠道输出APK目录已经存在，是否覆盖:\n" + outApkDir, "输出APK已经存在，是否覆盖", JOptionPane.OK_CANCEL_OPTION)) {
+                    return;
+                }
+            }
+        } else {
+            if (file.isFile() && file.exists() && JOptionPane.YES_OPTION != JOptionPane.showConfirmDialog(topPanel, "输出APK已经存在，是否覆盖:\n" + out, "输出APK已经存在，是否覆盖", JOptionPane.OK_CANCEL_OPTION)) {
+                return;
+            }
+        }
+
+        signBtn.setEnabled(false);
+
+        String in = inPathTF.getText();
+
+        String ksPass;
+        String keyPass;
+        try {
+            ksPass = new String(ksPassPF.getPassword());
+        } catch (NullPointerException ignore) {
+            ksPass = "";
+        }
+        try {
+            keyPass = new String(keyPassPF.getPassword());
+        } catch (NullPointerException ignore) {
+            keyPass = null;
+        }
+        String keyAlias = (String) keyAliasCB.getSelectedItem();
+        Properties mConfig = new Properties();
+        String ksPath0 = ksPathTF.getText();
+        mConfig.put("ks", ksPath0);
+        mConfig.put("in", in);
+        mConfig.put("ks-key-alias", keyAlias);
+        mConfig.put("in-filename", this.inputFileName);
+        mConfig.put("out", this.outPathTF.getText());
+        mConfig.put("channel-list", this.channelPathTF.getText());
+
+        if (保存密码CheckBox.isSelected()) {
+            mConfig.put("ks-pass", ksPass);
+            mConfig.put("key-pass", keyPass);
+        }
+
+        if (!readOnly) {
+            try {
+                Path configFile = getConfigPath();
+                try (BufferedWriter r = Files.newBufferedWriter(configFile, StandardCharsets.UTF_8)) {
+                    mConfig.store(r, "#");
+                }
+            } catch (IOException ignore) {
+            }
+        }
+
+        loggingTA.setText("");
+
+        String finalKsPass = ksPass;
+        String finalKeyPass = keyPass;
+        String pbOrg = progressBar1.getString();
+        progressBar1.setString("签名中...");
+        progressBar1.setStringPainted(true);
+        progressBar1.setIndeterminate(true);
+
+        Path ksPath = Paths.get(ksPath0);
+        Path input = Paths.get(in);
+
+        es.submit(() -> {
+            try {
+                int result;
+
+                if (channelPath != null && !channelPath.isEmpty()) {
+                    Path apkDir = CommandLine.detectOutDir(out);
+                    result = SignWorker.signChannelApk(input, inputFileName,
+                            apkDir,
+                            Paths.get(channelPath),
+                            ksPath, finalKsPass, keyAlias, finalKeyPass);
+                    progressBar1.setIndeterminate(false);
+                    progressBar1.setString(pbOrg);
+                    if (result == 0) {
+                        JOptionPane.showMessageDialog(topPanel, "多渠道成功, 输出APK文件夹\n" + apkDir);
+                    } else {
+                        JOptionPane.showMessageDialog(topPanel, "多渠道失败");
+                    }
+                } else {
+                    Path outPath = Paths.get(out);
+                    result = SignWorker.signApk(input, outPath, ksPath,
+                            finalKsPass, keyAlias, finalKeyPass);
+                    progressBar1.setIndeterminate(false);
+                    progressBar1.setString(pbOrg);
+                    if (result == 0) {
+                        if (JOptionPane.YES_OPTION == JOptionPane.showConfirmDialog(topPanel, "签名成功, 输出APK\n" + out, "签名结果", JOptionPane.OK_CANCEL_OPTION)) {
+                            Tools.openDir(topPanel, outPath.toFile().getParent());
+                        }
+                    } else {
+                        JOptionPane.showMessageDialog(topPanel, "签名失败");
+                    }
+                }
+
+            } catch (Exception ex) {
+                ex.printStackTrace();
+            }
+
+            signBtn.setEnabled(true);
+        });
+    }
+
+
+    private void loadLocalConfig() {
+        try {
+            Path configFile = getConfigPath();
+            Properties initConfig = CommandLine.load(configFile);
+
+            configBean = new SignerConfigBean(initConfig);
+
+            readOnly = configBean.isReadOnly();
+            ksPathTF.setText(configBean.getKs());
+
+            String inPath = configBean.getIn();
+            if (inPath.length() > 0) {
+                setInput(new File(inPath), configBean.getInFilename());
+            }
+            String outPath = configBean.getOut();
+            if (outPath.length() > 0) {
+                outPathTF.setText(outPath);
+            }
+            ksPassPF.setText(configBean.getKsPass());
+            keyPassPF.setText(configBean.getKsPass());
+            channelPathTF.setText(configBean.getChannelList());
+
+            String s = configBean.getKsKeyAlias();
+            if (!s.equals("{{auto}}") && s.length() != 0) {
+                keyAliasCB.addItem(s);
+                keyAliasCB.setSelectedItem(s);
+            }
+
+        } catch (Exception ignore) {
+            configBean = new SignerConfigBean();
+        }
+    }
+
     private void setInput(File file) {
         setInput(file, null);
     }
@@ -383,7 +424,7 @@ public class UX {
         if (fileName.startsWith("dx_unsigned")) {
             fileName = "SIGNED" + fileName.substring("dx_unsigned".length());
         } else {
-            fileName = "SIGNED-" + fileName;
+            fileName = "SIGNE D-" + fileName;
         }
         File out = new File(file.getParent(), fileName);
         outPathTF.setText(out.toString());
@@ -418,10 +459,10 @@ public class UX {
      * @noinspection ALL
      */
     private void $$$setupUI$$$() {
-        top = new JPanel();
-        top.setLayout(new GridLayoutManager(3, 1, new Insets(5, 5, 5, 5), -1, -1));
+        topPanel = new JPanel();
+        topPanel.setLayout(new GridLayoutManager(3, 1, new Insets(5, 5, 5, 5), -1, -1));
         tabbedPane1 = new JTabbedPane();
-        top.add(tabbedPane1, new GridConstraints(0, 0, 1, 1, GridConstraints.ANCHOR_CENTER, GridConstraints.FILL_BOTH, GridConstraints.SIZEPOLICY_CAN_SHRINK | GridConstraints.SIZEPOLICY_CAN_GROW, GridConstraints.SIZEPOLICY_CAN_SHRINK | GridConstraints.SIZEPOLICY_CAN_GROW, null, new Dimension(200, 200), null, 0, false));
+        topPanel.add(tabbedPane1, new GridConstraints(0, 0, 1, 1, GridConstraints.ANCHOR_CENTER, GridConstraints.FILL_BOTH, GridConstraints.SIZEPOLICY_CAN_SHRINK | GridConstraints.SIZEPOLICY_CAN_GROW, GridConstraints.SIZEPOLICY_CAN_SHRINK | GridConstraints.SIZEPOLICY_CAN_GROW, null, new Dimension(200, 200), null, 0, false));
         final JPanel panel1 = new JPanel();
         panel1.setLayout(new GridLayoutManager(6, 3, new Insets(0, 0, 0, 0), -1, -1));
         tabbedPane1.addTab("Apk签名 & 多渠道", panel1);
@@ -496,7 +537,7 @@ public class UX {
         panel2.add(v1SigningEnabledCheckBox, new GridConstraints(3, 1, 1, 1, GridConstraints.ANCHOR_WEST, GridConstraints.FILL_NONE, GridConstraints.SIZEPOLICY_CAN_SHRINK | GridConstraints.SIZEPOLICY_CAN_GROW, GridConstraints.SIZEPOLICY_FIXED, null, null, null, 0, false));
         final JPanel panel3 = new JPanel();
         panel3.setLayout(new GridLayoutManager(1, 2, new Insets(0, 0, 0, 0), -1, -1));
-        top.add(panel3, new GridConstraints(1, 0, 1, 1, GridConstraints.ANCHOR_CENTER, GridConstraints.FILL_BOTH, GridConstraints.SIZEPOLICY_CAN_SHRINK | GridConstraints.SIZEPOLICY_CAN_GROW, GridConstraints.SIZEPOLICY_CAN_SHRINK | GridConstraints.SIZEPOLICY_CAN_GROW, null, null, null, 0, false));
+        topPanel.add(panel3, new GridConstraints(1, 0, 1, 1, GridConstraints.ANCHOR_CENTER, GridConstraints.FILL_BOTH, GridConstraints.SIZEPOLICY_CAN_SHRINK | GridConstraints.SIZEPOLICY_CAN_GROW, GridConstraints.SIZEPOLICY_CAN_SHRINK | GridConstraints.SIZEPOLICY_CAN_GROW, null, null, null, 0, false));
         signBtn = new JButton();
         signBtn.setText("         4.签名         ");
         panel3.add(signBtn, new GridConstraints(0, 1, 1, 1, GridConstraints.ANCHOR_CENTER, GridConstraints.FILL_NONE, GridConstraints.SIZEPOLICY_CAN_SHRINK | GridConstraints.SIZEPOLICY_CAN_GROW, GridConstraints.SIZEPOLICY_FIXED, null, null, null, 0, false));
@@ -505,7 +546,7 @@ public class UX {
         progressBar1.setStringPainted(true);
         panel3.add(progressBar1, new GridConstraints(0, 0, 1, 1, GridConstraints.ANCHOR_CENTER, GridConstraints.FILL_HORIZONTAL, GridConstraints.SIZEPOLICY_WANT_GROW, GridConstraints.SIZEPOLICY_FIXED, null, null, null, 0, false));
         final JScrollPane scrollPane1 = new JScrollPane();
-        top.add(scrollPane1, new GridConstraints(2, 0, 1, 1, GridConstraints.ANCHOR_CENTER, GridConstraints.FILL_BOTH, GridConstraints.SIZEPOLICY_CAN_SHRINK | GridConstraints.SIZEPOLICY_WANT_GROW, GridConstraints.SIZEPOLICY_CAN_SHRINK | GridConstraints.SIZEPOLICY_WANT_GROW, null, null, null, 0, false));
+        topPanel.add(scrollPane1, new GridConstraints(2, 0, 1, 1, GridConstraints.ANCHOR_CENTER, GridConstraints.FILL_BOTH, GridConstraints.SIZEPOLICY_CAN_SHRINK | GridConstraints.SIZEPOLICY_WANT_GROW, GridConstraints.SIZEPOLICY_CAN_SHRINK | GridConstraints.SIZEPOLICY_WANT_GROW, null, null, null, 0, false));
         loggingTA = new JTextArea();
         loggingTA.setDoubleBuffered(true);
         loggingTA.setEditable(true);
@@ -520,13 +561,40 @@ public class UX {
         label5.setLabelFor(outPathTF);
         label7.setLabelFor(keyAliasCB);
         label8.setLabelFor(keyPassPF);
+
+        FontUIResource defaultFont = new FontUIResource(Font.SERIF, Font.BOLD, 24);
+        setComponentFont(topPanel, defaultFont);
+    }
+
+    public static void setComponentFont(Component component, Font font) {
+        component.setFont(font);
+        if (component instanceof Container) {
+            for (Component child : ((Container) component).getComponents()) {
+                setComponentFont(child, font);
+            }
+        }
+    }
+
+    public static void setLookAndFeel(String lookAndFeel) {
+        try {
+            for (UIManager.LookAndFeelInfo info : UIManager.getInstalledLookAndFeels()) {
+                if (lookAndFeel.equals(info.getName())) {
+                    UIManager.setLookAndFeel(info.getClassName());
+                    break;
+                }
+            }
+            // 更新当前显示的组件，以应用新的 Look and Feel
+            SwingUtilities.updateComponentTreeUI(JFrame.getFrames()[0]);
+        } catch (Exception e) {
+            e.printStackTrace();
+        }
     }
 
     /**
      * @noinspection ALL
      */
     public JComponent $$$getRootComponent$$$() {
-        return top;
+        return topPanel;
     }
 
 }
