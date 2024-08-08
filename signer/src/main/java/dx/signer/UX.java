@@ -26,16 +26,21 @@ import java.awt.Component;
 import java.awt.Container;
 import java.awt.Dimension;
 import java.awt.Font;
+import java.awt.HeadlessException;
+import java.awt.Image;
 import java.awt.Insets;
 import java.awt.Toolkit;
 import java.io.BufferedWriter;
 import java.io.File;
 import java.io.IOException;
+import java.lang.reflect.Field;
+import java.lang.reflect.Method;
 import java.nio.charset.StandardCharsets;
 import java.nio.file.Files;
 import java.nio.file.Path;
 import java.nio.file.Paths;
 import java.security.KeyStore;
+import java.util.Collections;
 import java.util.Enumeration;
 import java.util.HashSet;
 import java.util.Properties;
@@ -43,10 +48,13 @@ import java.util.Set;
 import java.util.concurrent.ExecutorService;
 import java.util.concurrent.Executors;
 
+import javax.swing.Icon;
+import javax.swing.ImageIcon;
 import javax.swing.JButton;
 import javax.swing.JCheckBox;
 import javax.swing.JComboBox;
 import javax.swing.JComponent;
+import javax.swing.JDialog;
 import javax.swing.JFileChooser;
 import javax.swing.JFrame;
 import javax.swing.JLabel;
@@ -56,14 +64,21 @@ import javax.swing.JPasswordField;
 import javax.swing.JProgressBar;
 import javax.swing.JScrollPane;
 import javax.swing.JTabbedPane;
+import javax.swing.JTable;
 import javax.swing.JTextArea;
 import javax.swing.JTextField;
+import javax.swing.LookAndFeel;
+import javax.swing.RowSorter;
+import javax.swing.SortOrder;
 import javax.swing.SwingUtilities;
 import javax.swing.UIManager;
+import javax.swing.UnsupportedLookAndFeelException;
 import javax.swing.event.PopupMenuEvent;
 import javax.swing.event.PopupMenuListener;
 import javax.swing.filechooser.FileFilter;
+import javax.swing.plaf.FileChooserUI;
 import javax.swing.plaf.FontUIResource;
+import javax.swing.table.TableRowSorter;
 import javax.swing.text.DefaultCaret;
 
 import dx.channel.ApkSigns;
@@ -99,6 +114,12 @@ public class UX {
         System.setProperty(SimpleLogger.SHOW_LOG_NAME_KEY, "false");
         System.setProperty(SimpleLogger.SHOW_THREAD_NAME_KEY, "false");
 
+        // 设置全局样式属性
+//        UIManager.put("OptionPane.background", Color.LIGHT_GRAY);
+//        UIManager.put("Panel.background", Color.LIGHT_GRAY);
+//        UIManager.put("Button.background", Color.WHITE);
+//        UIManager.put("Button.foreground", Color.BLACK);
+
         if (args.length >= 1 && args[0].equals("sign")) {
             CommandLine.main(args);
             return;
@@ -112,8 +133,8 @@ public class UX {
 
         // make the frame half the height and width
         Dimension screenSize = Toolkit.getDefaultToolkit().getScreenSize();
-        int width1 = screenSize.width * 3 / 4;
-        int height1 = screenSize.height * 3 / 4;
+        int width1 = screenSize.width * 9 / 10;
+        int height1 = screenSize.height * 9 / 10;
 
         frame.setSize(width1, height1);
 
@@ -123,17 +144,82 @@ public class UX {
         frame.setVisible(true);
     }
 
+    /**
+     * This method returns JFileChooser with Windows look instead of native java
+     */
+    public static JFileChooser windowsJFileChooser() {
+        LookAndFeel previousLF = UIManager.getLookAndFeel();
+        JFileChooser chooser;
+        // 获取屏幕大小
+        final Dimension screenSize = Toolkit.getDefaultToolkit().getScreenSize();
+        try {
+            UIManager.setLookAndFeel(UIManager.getSystemLookAndFeelClassName());
+            chooser = new JFileChooser() {
+
+                @Override
+                protected JDialog createDialog(Component parent) throws HeadlessException {
+
+                    // 计算 JFileChooser 的尺寸
+                    Dimension dialogSize = getPreferredSize();
+                    // 计算中心位置
+                    int x = (screenSize.width - dialogSize.width) / 2;
+                    int y = (screenSize.height - dialogSize.height) / 2;
+                    // 设置 JFileChooser 的位置
+                    parent.setLocation(x, y);
+                    return super.createDialog(parent);
+                }
+            };
+            UIManager.setLookAndFeel(previousLF);
+        } catch (IllegalAccessException | UnsupportedLookAndFeelException | InstantiationException | ClassNotFoundException e) {
+            e.printStackTrace();
+            chooser = new JFileChooser();
+        }
+        setFileChooserDetailsView(chooser);
+        chooser.setFileSelectionMode(JFileChooser.FILES_ONLY);
+        chooser.setPreferredSize(new Dimension(screenSize.width / 2, screenSize.height / 2));
+        // Enable the address bar for input
+        chooser.setControlButtonsAreShown(true);
+        chooser.setMultiSelectionEnabled(false);
+        return chooser;
+    }
+
+    /**
+     * 设置字体,默认排序
+     */
+    private static void setFileChooserDetailsView(JFileChooser fileChooser) {
+        try {
+            FileChooserUI chooserUI = fileChooser.getUI();
+            // 获取 filePane 字段
+            Field filePaneField = chooserUI.getClass().getDeclaredField("filePane");
+            filePaneField.setAccessible(true);
+            Object filePane = filePaneField.get(chooserUI);
+
+            // 调用 setViewType 方法设置为详细信息视图
+            Method setViewType = filePane.getClass().getDeclaredMethod("setViewType", int.class);
+            setViewType.setAccessible(true);
+            setViewType.invoke(filePane, 1); // 1 表示详细信息视图
+
+            // 获取 filePane 内部的 detailsTable 字段
+            Field detailsTableField = filePane.getClass().getDeclaredField("detailsTable");
+            detailsTableField.setAccessible(true);
+            JTable detailsTable = (JTable) detailsTableField.get(filePane);
+
+            // 获取 detailsTable 的 rowSorter
+            TableRowSorter<?> rowSorter = (TableRowSorter<?>) detailsTable.getRowSorter();
+            // 设置默认排序方式（按文件名称排序）
+            int dateTimeIndex = 3;
+            rowSorter.setSortKeys(Collections.singletonList(new RowSorter.SortKey(dateTimeIndex, SortOrder.DESCENDING)));
+        } catch (Exception e) {
+            e.printStackTrace();
+        }
+    }
+
 
     public UX() {
         loadLocalConfig();
 
-        JFileChooser fileChooser = new JFileChooser();
+        JFileChooser fileChooser = windowsJFileChooser();
         fileChooser.setCurrentDirectory(new File(configBean.getIn()));
-        fileChooser.setFileSelectionMode(JFileChooser.FILES_ONLY);
-        fileChooser.setPreferredSize(new Dimension(1280, 960));
-        // Enable the address bar for input
-        fileChooser.setControlButtonsAreShown(true);
-        fileChooser.setMultiSelectionEnabled(false);
 
         inBtn.addActionListener(e -> {
             fileChooser.setFileFilter(new FileFilter() {
@@ -152,6 +238,7 @@ public class UX {
             if (result == JFileChooser.APPROVE_OPTION) {
                 File file = fileChooser.getSelectedFile();
                 setInput(file);
+                onSubmitClick();
             }
         });
         ksBtn.addActionListener(e -> {
@@ -405,6 +492,7 @@ public class UX {
             }
 
         } catch (Exception ignore) {
+            ignore.printStackTrace();
             configBean = new SignerConfigBean();
         }
     }
@@ -421,27 +509,36 @@ public class UX {
         inPathTF.setText(file.getAbsolutePath());
 
         String fileName = inputFileName;
+        String fileExtension = inputFileName.substring(inputFileName.lastIndexOf('.'));
         if (fileName.startsWith("dx_unsigned")) {
-            fileName = "SIGNED" + fileName.substring("dx_unsigned".length());
-        } else {
-            fileName = "SIGNE D-" + fileName;
+            fileName = "顶象_" + fileName.substring("dx_unsigned".length());
+        }
+        if (fileName.contains("_jiagu")) {
+            int index = fileName.indexOf("_jiagu");
+            fileName = fileName.substring(0, index - 4) + fileExtension;
+        }
+        if (fileName.contains("_unsign")) {
+            int index = fileName.indexOf("_unsign");
+            fileName = fileName.substring(0, index) + fileExtension;
         }
         File out = new File(file.getParent(), fileName);
         outPathTF.setText(out.toString());
     }
 
     private static Path getConfigPath() {
-        Path HOME = Paths.get(".");
+        Path HOME = Paths.get("");
         Path configDir = HOME.resolve("etc");
         if (!Files.exists(configDir)) {
             try {
                 Files.createDirectories(configDir);
             } catch (IOException ignore) {
-
+                // Do Nothing
             }
         }
-
-        return configDir.resolve("cfg.properties");
+        Path config = configDir.resolve("cfg.properties");
+        File fileConfig = config.toFile();
+        System.out.println("-------启动-------:" + fileConfig.getAbsolutePath() + ",是否存在:" + fileConfig.exists());
+        return config;
     }
 
     {
@@ -564,6 +661,36 @@ public class UX {
 
         FontUIResource defaultFont = new FontUIResource(Font.SERIF, Font.BOLD, 24);
         setComponentFont(topPanel, defaultFont);
+
+        int iconSize = 32;
+        //选择器的字体
+        UIManager.put("FileChooser.listFont", new Font(Font.SERIF, Font.PLAIN, 26));
+        // 设置文件选择器的文件图标大小
+        updateIconSize("FileView.directoryIcon", iconSize);
+        updateIconSize("FileView.fileIcon", iconSize);
+        updateIconSize("FileChooser.upFolderIcon", iconSize);
+        updateIconSize("FileChooser.homeFolderIcon", iconSize);
+        updateIconSize("FileChooser.newFolderIcon", iconSize);
+        updateIconSize("FileChooser.listViewIcon", iconSize);
+        updateIconSize("FileChooser.detailsViewIcon", iconSize);
+    }
+
+    private static void updateIconSize(String iconName, int size) {
+        try {
+            UIManager.put(iconName, createScaledIcon(UIManager.getIcon(iconName), size, size));
+        } catch (Exception e) {
+            e.printStackTrace();
+        }
+
+    }
+
+    private static Icon createScaledIcon(Icon originalIcon, int width, int height) {
+        if (originalIcon instanceof ImageIcon) {
+            Image image = ((ImageIcon) originalIcon).getImage();
+            Image scaledImage = image.getScaledInstance(width, height, Image.SCALE_SMOOTH);
+            return new ImageIcon(scaledImage);
+        }
+        return originalIcon;
     }
 
     public static void setComponentFont(Component component, Font font) {
