@@ -84,6 +84,7 @@ import javax.swing.text.DefaultCaret;
 import dx.channel.ApkSigns;
 
 public class UX {
+    private static String rootPath = "";
     ExecutorService es = Executors.newSingleThreadExecutor();
     private JButton inBtn;
     private JTextField inPathTF;
@@ -123,6 +124,9 @@ public class UX {
         if (args.length >= 1 && args[0].equals("sign")) {
             CommandLine.main(args);
             return;
+        }
+        if (args.length >= 1 && args[0].equals("-path")) {
+            rootPath = args[1];
         }
 
         JFrame frame = new JFrame("Apk签名&多渠道工具");
@@ -468,6 +472,7 @@ public class UX {
             Path configFile = getConfigPath();
             Properties initConfig = CommandLine.load(configFile);
 
+            loggingTA.append("\n地址:" + rootPath);
             configBean = new SignerConfigBean(initConfig);
 
             readOnly = configBean.isReadOnly();
@@ -525,8 +530,8 @@ public class UX {
         outPathTF.setText(out.toString());
     }
 
-    private static Path getConfigPath() {
-        Path HOME = Paths.get("");
+    private Path getConfigPath() {
+        Path HOME = Paths.get(rootPath);
         Path configDir = HOME.resolve("etc");
         if (!Files.exists(configDir)) {
             try {
