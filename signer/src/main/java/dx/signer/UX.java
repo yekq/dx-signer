@@ -30,6 +30,8 @@ import java.awt.HeadlessException;
 import java.awt.Image;
 import java.awt.Insets;
 import java.awt.Toolkit;
+import java.awt.event.WindowEvent;
+import java.awt.event.WindowFocusListener;
 import java.io.BufferedWriter;
 import java.io.File;
 import java.io.IOException;
@@ -70,7 +72,6 @@ import javax.swing.JTextField;
 import javax.swing.LookAndFeel;
 import javax.swing.RowSorter;
 import javax.swing.SortOrder;
-import javax.swing.SwingUtilities;
 import javax.swing.UIManager;
 import javax.swing.UnsupportedLookAndFeelException;
 import javax.swing.event.PopupMenuEvent;
@@ -80,6 +81,7 @@ import javax.swing.plaf.FileChooserUI;
 import javax.swing.plaf.FontUIResource;
 import javax.swing.table.TableRowSorter;
 import javax.swing.text.DefaultCaret;
+import javax.swing.text.JTextComponent;
 
 import dx.channel.ApkSigns;
 
@@ -109,6 +111,9 @@ public class UX {
     private String inputFileName = "";
 
     private SignerConfigBean configBean;
+    private static int windowWidth;
+    private static int windowHeight;
+    private static boolean isShow;
 
     public static void main(String[] args) throws IOException {
 
@@ -129,18 +134,36 @@ public class UX {
             rootPath = args[1];
         }
 
-        JFrame frame = new JFrame("Apk签名&多渠道工具");
-        frame.setContentPane(new UX().topPanel);
+        // make the frame half the height and width
+        Dimension screenSize = Toolkit.getDefaultToolkit().getScreenSize();
+        windowWidth = screenSize.width * 9 / 10;
+        windowHeight = screenSize.height * 9 / 10;
+        isShow = false;
+
+        JFrame frame = new JFrame("Apk签名&多渠道工具:" + rootPath);
+
+        UX ux = new UX();
+        frame.addWindowFocusListener(new WindowFocusListener() {
+            @Override
+            public void windowGainedFocus(WindowEvent e) {
+                if (isShow) {
+                    return;
+                }
+                isShow = true;
+                ux.showChooseAppFileDialog();
+            }
+
+            @Override
+            public void windowLostFocus(WindowEvent e) {
+                // Do Nothing
+            }
+        });
+        frame.setContentPane(ux.topPanel);
         frame.setDefaultCloseOperation(JFrame.EXIT_ON_CLOSE);
 
         frame.pack();
 
-        // make the frame half the height and width
-        Dimension screenSize = Toolkit.getDefaultToolkit().getScreenSize();
-        int width1 = screenSize.width * 9 / 10;
-        int height1 = screenSize.height * 9 / 10;
-
-        frame.setSize(width1, height1);
+        frame.setSize(windowWidth, windowHeight);
 
         // here's the part where i center the jframe on screen
         frame.setLocationRelativeTo(null);
@@ -153,24 +176,28 @@ public class UX {
      */
     public static JFileChooser windowsJFileChooser() {
         LookAndFeel previousLF = UIManager.getLookAndFeel();
-        JFileChooser chooser;
+
         // 获取屏幕大小
-        final Dimension screenSize = Toolkit.getDefaultToolkit().getScreenSize();
+        int dialogWidth = windowWidth * 3 / 4;
+        int dialogHeight = windowHeight * 3 / 4;
+        JFileChooser chooser;
         try {
             UIManager.setLookAndFeel(UIManager.getSystemLookAndFeelClassName());
             chooser = new JFileChooser() {
 
                 @Override
                 protected JDialog createDialog(Component parent) throws HeadlessException {
-
                     // 计算 JFileChooser 的尺寸
-                    Dimension dialogSize = getPreferredSize();
+//                    Dimension dialogSize = getPreferredSize();
+                    Dimension screenSize = Toolkit.getDefaultToolkit().getScreenSize();
                     // 计算中心位置
-                    int x = (screenSize.width - dialogSize.width) / 2;
-                    int y = (screenSize.height - dialogSize.height) / 2;
+                    int x = (screenSize.width - dialogWidth) / 2;
+                    int y = (screenSize.height - dialogHeight) / 2;
                     // 设置 JFileChooser 的位置
-                    parent.setLocation(x, y);
-                    return super.createDialog(parent);
+                    JDialog dialog = super.createDialog(parent);
+                    dialog.setLocation(x, y);
+                    setFileChooserDetailsView(this);
+                    return dialog;
                 }
             };
             UIManager.setLookAndFeel(previousLF);
@@ -180,7 +207,7 @@ public class UX {
         }
         setFileChooserDetailsView(chooser);
         chooser.setFileSelectionMode(JFileChooser.FILES_ONLY);
-        chooser.setPreferredSize(new Dimension(screenSize.width / 2, screenSize.height / 2));
+        chooser.setPreferredSize(new Dimension(dialogWidth, dialogHeight));
         // Enable the address bar for input
         chooser.setControlButtonsAreShown(true);
         chooser.setMultiSelectionEnabled(false);
@@ -213,78 +240,20 @@ public class UX {
             // 设置默认排序方式（按文件名称排序）
             int dateTimeIndex = 3;
             rowSorter.setSortKeys(Collections.singletonList(new RowSorter.SortKey(dateTimeIndex, SortOrder.DESCENDING)));
+
+            int dialogWidth = windowWidth * 2 / 15;
+            detailsTable.getColumnModel().getColumn(3).setPreferredWidth(dialogWidth);
         } catch (Exception e) {
             e.printStackTrace();
         }
     }
 
-
     public UX() {
         loadLocalConfig();
 
-        JFileChooser fileChooser = windowsJFileChooser();
-        fileChooser.setCurrentDirectory(new File(configBean.getIn()));
-
-        inBtn.addActionListener(e -> {
-            fileChooser.setFileFilter(new FileFilter() {
-                @Override
-                public boolean accept(File f) {
-                    String s = f.getName().toLowerCase();
-                    return f.isDirectory() || s.endsWith(".apk") || s.endsWith(".aab");
-                }
-
-                @Override
-                public String getDescription() {
-                    return "*.apk,*.aab";
-                }
-            });
-            int result = fileChooser.showOpenDialog(inBtn);
-            if (result == JFileChooser.APPROVE_OPTION) {
-                File file = fileChooser.getSelectedFile();
-                setInput(file);
-                onSubmitClick();
-            }
-        });
-        ksBtn.addActionListener(e -> {
-            fileChooser.setFileFilter(new FileFilter() {
-                @Override
-                public boolean accept(File f) {
-                    String s = f.getName().toLowerCase();
-                    return f.isDirectory() || s.endsWith(".ks") || s.endsWith(".keystore") || s.endsWith(".p12") || s.endsWith(".pfx") || s.endsWith(".jks");
-                }
-
-                @Override
-                public String getDescription() {
-                    return "*.ks, *.keystore, *.p12, *.pfx, *.jks";
-                }
-            });
-            int result = fileChooser.showOpenDialog(ksBtn);
-            if (result == JFileChooser.APPROVE_OPTION) {
-                File file = fileChooser.getSelectedFile();
-                ksPathTF.setText(file.getAbsolutePath());
-            }
-        });
-
-        channelBtn.addActionListener(e -> {
-            fileChooser.setFileFilter(new FileFilter() {
-                @Override
-                public boolean accept(File f) {
-                    String s = f.getName().toLowerCase();
-                    return f.isDirectory() || (f.isFile() && s.endsWith(".txt"));
-                }
-
-                @Override
-                public String getDescription() {
-                    return "*.txt";
-                }
-            });
-            int result = fileChooser.showOpenDialog(channelBtn);
-            if (result == JFileChooser.APPROVE_OPTION) {
-                File file = fileChooser.getSelectedFile();
-                channelPathTF.setText(file.getAbsolutePath());
-            }
-        });
-
+        inBtn.addActionListener(e -> showChooseAppFileDialog());
+        ksBtn.addActionListener(e -> showKeystoreFileDialog());
+        channelBtn.addActionListener(e -> showChannelFileDialog());
         signBtn.addActionListener(e -> onSubmitClick());
 
         keyAliasCB.removeAllItems();
@@ -352,6 +321,74 @@ public class UX {
                 keyPassPF.setEnabled(false);
             }
             outPathTF.setEnabled(false);
+        }
+    }
+
+    private JFileChooser showFileChooser(JTextComponent text, Component btn, FileFilter filter) {
+        JFileChooser fileChooser = windowsJFileChooser();
+        fileChooser.setFileFilter(filter);
+        fileChooser.setCurrentDirectory(new File(text.getText()));
+        return fileChooser;
+    }
+
+    private void showChooseAppFileDialog() {
+        JFileChooser fileChooser = showFileChooser(inPathTF, inBtn, new FileFilter() {
+            @Override
+            public boolean accept(File f) {
+                String s = f.getName().toLowerCase();
+                return f.isDirectory() || s.endsWith(".apk") || s.endsWith(".aab");
+            }
+
+            @Override
+            public String getDescription() {
+                return "*.apk,*.aab";
+            }
+        });
+        int result = fileChooser.showOpenDialog(inBtn);
+        if (result == JFileChooser.APPROVE_OPTION) {
+            File file = fileChooser.getSelectedFile();
+            setInput(file);
+            onSubmitClick();
+        }
+    }
+
+    private void showKeystoreFileDialog() {
+        JFileChooser fileChooser = showFileChooser(ksPathTF, ksBtn, new FileFilter() {
+            @Override
+            public boolean accept(File f) {
+                String s = f.getName().toLowerCase();
+                return f.isDirectory() || s.endsWith(".ks") || s.endsWith(".keystore") || s.endsWith(".p12") || s.endsWith(".pfx") || s.endsWith(".jks");
+            }
+
+            @Override
+            public String getDescription() {
+                return "*.ks, *.keystore, *.p12, *.pfx, *.jks";
+            }
+        });
+        int result = fileChooser.showOpenDialog(ksBtn);
+        if (result == JFileChooser.APPROVE_OPTION) {
+            File file = fileChooser.getSelectedFile();
+            ksPathTF.setText(file.getAbsolutePath());
+        }
+    }
+
+    private void showChannelFileDialog() {
+        JFileChooser fileChooser = showFileChooser(channelPathTF, channelBtn, new FileFilter() {
+            @Override
+            public boolean accept(File f) {
+                String s = f.getName().toLowerCase();
+                return f.isDirectory() || (f.isFile() && s.endsWith(".txt"));
+            }
+
+            @Override
+            public String getDescription() {
+                return "*.txt";
+            }
+        });
+        int result = fileChooser.showOpenDialog(channelBtn);
+        if (result == JFileChooser.APPROVE_OPTION) {
+            File file = fileChooser.getSelectedFile();
+            channelPathTF.setText(file.getAbsolutePath());
         }
     }
 
@@ -466,13 +503,20 @@ public class UX {
         });
     }
 
+    private void log(String message) {
+        if (null == loggingTA) {
+            System.out.append(message);
+        } else {
+            loggingTA.append("\n");
+            loggingTA.append(message);
+        }
+    }
+
 
     private void loadLocalConfig() {
         try {
             Path configFile = getConfigPath();
             Properties initConfig = CommandLine.load(configFile);
-
-            loggingTA.append("\n地址:" + rootPath);
             configBean = new SignerConfigBean(initConfig);
 
             readOnly = configBean.isReadOnly();
@@ -495,7 +539,7 @@ public class UX {
                 keyAliasCB.addItem(s);
                 keyAliasCB.setSelectedItem(s);
             }
-
+            inPathTF.setText(configBean.getIn());
         } catch (Exception ignore) {
             ignore.printStackTrace();
             configBean = new SignerConfigBean();
@@ -514,20 +558,27 @@ public class UX {
         inPathTF.setText(file.getAbsolutePath());
 
         String fileName = inputFileName;
-        String fileExtension = inputFileName.substring(inputFileName.lastIndexOf('.'));
-        if (fileName.startsWith("dx_unsigned")) {
-            fileName = "顶象_" + fileName.substring("dx_unsigned".length());
+        if (fileName == null || fileName.isEmpty()) {
+            return;
         }
-        if (fileName.contains("_jiagu")) {
-            int index = fileName.indexOf("_jiagu");
-            fileName = fileName.substring(0, index - 4) + fileExtension;
+        try {
+            String fileExtension = fileName.substring(fileName.lastIndexOf('.'));
+            if (fileName.startsWith("dx_unsigned")) {
+                fileName = "顶象_" + fileName.substring("dx_unsigned".length());
+            }
+            if (fileName.contains("_jiagu")) {
+                int index = fileName.indexOf("_jiagu");
+                fileName = fileName.substring(0, index - 4) + fileExtension;
+            }
+            if (fileName.contains("_unsign")) {
+                int index = fileName.indexOf("_unsign");
+                fileName = fileName.substring(0, index) + fileExtension;
+            }
+            File out = new File(file.getParent(), fileName);
+            outPathTF.setText(out.toString());
+        } catch (Exception e) {
+            e.printStackTrace();
         }
-        if (fileName.contains("_unsign")) {
-            int index = fileName.indexOf("_unsign");
-            fileName = fileName.substring(0, index) + fileExtension;
-        }
-        File out = new File(file.getParent(), fileName);
-        outPathTF.setText(out.toString());
     }
 
     private Path getConfigPath() {
@@ -542,7 +593,7 @@ public class UX {
         }
         Path config = configDir.resolve("cfg.properties");
         File fileConfig = config.toFile();
-        System.out.println("-------启动-------:" + fileConfig.getAbsolutePath() + ",是否存在:" + fileConfig.exists());
+        log("-------启动-------:" + fileConfig.getAbsolutePath() + ",是否存在:" + fileConfig.exists());
         return config;
     }
 
@@ -664,6 +715,13 @@ public class UX {
         label7.setLabelFor(keyAliasCB);
         label8.setLabelFor(keyPassPF);
 
+        fixFontStyle();
+    }
+
+    /**
+     * 优化风格
+     */
+    private void fixFontStyle() {
         FontUIResource defaultFont = new FontUIResource(Font.SERIF, Font.BOLD, 24);
         setComponentFont(topPanel, defaultFont);
 
@@ -698,27 +756,12 @@ public class UX {
         return originalIcon;
     }
 
-    public static void setComponentFont(Component component, Font font) {
+    private static void setComponentFont(Component component, Font font) {
         component.setFont(font);
         if (component instanceof Container) {
             for (Component child : ((Container) component).getComponents()) {
                 setComponentFont(child, font);
             }
-        }
-    }
-
-    public static void setLookAndFeel(String lookAndFeel) {
-        try {
-            for (UIManager.LookAndFeelInfo info : UIManager.getInstalledLookAndFeels()) {
-                if (lookAndFeel.equals(info.getName())) {
-                    UIManager.setLookAndFeel(info.getClassName());
-                    break;
-                }
-            }
-            // 更新当前显示的组件，以应用新的 Look and Feel
-            SwingUtilities.updateComponentTreeUI(JFrame.getFrames()[0]);
-        } catch (Exception e) {
-            e.printStackTrace();
         }
     }
 
