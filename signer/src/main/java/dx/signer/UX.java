@@ -42,38 +42,11 @@ import java.nio.file.Files;
 import java.nio.file.Path;
 import java.nio.file.Paths;
 import java.security.KeyStore;
-import java.util.Collections;
-import java.util.Enumeration;
-import java.util.HashSet;
-import java.util.Properties;
-import java.util.Set;
+import java.util.*;
 import java.util.concurrent.ExecutorService;
 import java.util.concurrent.Executors;
 
-import javax.swing.Icon;
-import javax.swing.ImageIcon;
-import javax.swing.JButton;
-import javax.swing.JCheckBox;
-import javax.swing.JComboBox;
-import javax.swing.JComponent;
-import javax.swing.JDialog;
-import javax.swing.JFileChooser;
-import javax.swing.JFrame;
-import javax.swing.JLabel;
-import javax.swing.JOptionPane;
-import javax.swing.JPanel;
-import javax.swing.JPasswordField;
-import javax.swing.JProgressBar;
-import javax.swing.JScrollPane;
-import javax.swing.JTabbedPane;
-import javax.swing.JTable;
-import javax.swing.JTextArea;
-import javax.swing.JTextField;
-import javax.swing.LookAndFeel;
-import javax.swing.RowSorter;
-import javax.swing.SortOrder;
-import javax.swing.UIManager;
-import javax.swing.UnsupportedLookAndFeelException;
+import javax.swing.*;
 import javax.swing.event.PopupMenuEvent;
 import javax.swing.event.PopupMenuListener;
 import javax.swing.filechooser.FileFilter;
@@ -86,6 +59,8 @@ import javax.swing.text.JTextComponent;
 import dx.channel.ApkSigns;
 
 public class UX {
+    private static final String FILE_CHOOSER_SORT_LISTENER_INSTALLED =
+            "dx.signer.fileChooserSortListenerInstalled";
     private static String rootPath = "";
     ExecutorService es = Executors.newSingleThreadExecutor();
     private JButton inBtn;
@@ -96,7 +71,7 @@ public class UX {
     private JTextField outPathTF;
     private JButton signBtn;
     private JTextArea loggingTA;
-    private JCheckBox 保存密码CheckBox;
+    private JCheckBox savePwCheckBox;
     private JComboBox keyAliasCB;
     private JPasswordField keyPassPF;
     private JPasswordField ksPassPF;
@@ -215,34 +190,97 @@ public class UX {
     }
 
     /**
-     * 设置字体,默认排序
+     * 设置字体,默认排序(已经废弃)
      */
     private static void setFileChooserDetailsView(JFileChooser fileChooser) {
+        applyModifiedTimeSort(fileChooser);
+
+        if (fileChooser.getClientProperty(FILE_CHOOSER_SORT_LISTENER_INSTALLED) == null) {
+            fileChooser.putClientProperty(FILE_CHOOSER_SORT_LISTENER_INSTALLED, Boolean.TRUE);
+            fileChooser.addPropertyChangeListener(JFileChooser.DIRECTORY_CHANGED_PROPERTY,
+                    event -> applyModifiedTimeSort(fileChooser));
+        }
+    }
+
+    private static void applyModifiedTimeSort(JFileChooser fileChooser) {
+        SwingUtilities.invokeLater(() -> {
+            try {
+                FileChooserUI chooserUI = fileChooser.getUI();
+                Field filePaneField = chooserUI.getClass().getDeclaredField("filePane");
+                filePaneField.setAccessible(true);
+                Object filePane = filePaneField.get(chooserUI);
+
+                Method setViewType = filePane.getClass().getDeclaredMethod("setViewType", int.class);
+                setViewType.setAccessible(true);
+                setViewType.invoke(filePane, 1);
+
+                Field detailsTableField = filePane.getClass().getDeclaredField("detailsTable");
+                detailsTableField.setAccessible(true);
+                JTable detailsTable = (JTable) detailsTableField.get(filePane);
+                if (!(detailsTable.getRowSorter() instanceof TableRowSorter)) {
+                    return;
+                }
+
+                int modifiedTimeColumn = -1;
+                for (int modelColumn = 0; modelColumn < detailsTable.getModel().getColumnCount(); modelColumn++) {
+                    if (Date.class.isAssignableFrom(detailsTable.getModel().getColumnClass(modelColumn))) {
+                        modifiedTimeColumn = modelColumn;
+                        break;
+                    }
+                }
+                if (modifiedTimeColumn < 0) {
+                    return;
+                }
+
+                TableRowSorter<?> rowSorter = (TableRowSorter<?>) detailsTable.getRowSorter();
+                rowSorter.setSortable(modifiedTimeColumn, true);
+                rowSorter.setSortKeys(Collections.singletonList(
+                        new RowSorter.SortKey(modifiedTimeColumn, SortOrder.DESCENDING)));
+                rowSorter.sort();
+
+                int viewColumn = detailsTable.convertColumnIndexToView(modifiedTimeColumn);
+                if (viewColumn >= 0) {
+                    detailsTable.getColumnModel().getColumn(viewColumn)
+                            .setPreferredWidth(windowWidth * 2 / 15);
+                }
+            } catch (ReflectiveOperationException | RuntimeException e) {
+                e.printStackTrace();
+            }
+        });
+    }
+    /**
+     * 使用反射设置排序方式
+     *
+     * @param fileChooser JFileChooser 实例
+     */
+    private static void setFileChooserDetailsView2(JFileChooser fileChooser) {
         try {
-            FileChooserUI chooserUI = fileChooser.getUI();
+            // 获取 UI 实例
+            Object ui = fileChooser.getUI();
+
             // 获取 filePane 字段
-            Field filePaneField = chooserUI.getClass().getDeclaredField("filePane");
+            Field filePaneField = ui.getClass().getDeclaredField("filePane");
             filePaneField.setAccessible(true);
-            Object filePane = filePaneField.get(chooserUI);
+            Object filePane = filePaneField.get(ui);
 
-            // 调用 setViewType 方法设置为详细信息视图
-            Method setViewType = filePane.getClass().getDeclaredMethod("setViewType", int.class);
-            setViewType.setAccessible(true);
-            setViewType.invoke(filePane, 1); // 1 表示详细信息视图
+            // 获取 getRowSorter 方法
+            Method getRowSorter = filePane.getClass().getDeclaredMethod("getRowSorter");
+            getRowSorter.setAccessible(true);
+            Object rowSorter = getRowSorter.invoke(filePane);
 
-            // 获取 filePane 内部的 detailsTable 字段
-            Field detailsTableField = filePane.getClass().getDeclaredField("detailsTable");
-            detailsTableField.setAccessible(true);
-            JTable detailsTable = (JTable) detailsTableField.get(filePane);
+            if (rowSorter instanceof TableRowSorter) {
+                @SuppressWarnings("unchecked")
+                TableRowSorter<?> sorter = (TableRowSorter<?>) rowSorter;
 
-            // 获取 detailsTable 的 rowSorter
-            TableRowSorter<?> rowSorter = (TableRowSorter<?>) detailsTable.getRowSorter();
-            // 设置默认排序方式（按文件名称排序）
-            int dateTimeIndex = 3;
-            rowSorter.setSortKeys(Collections.singletonList(new RowSorter.SortKey(dateTimeIndex, SortOrder.DESCENDING)));
+                // 一般情况下“修改时间”在第 3 列或第 4 列，可调试确认
+                int modifiedTimeColumnIndex = 3;
 
-            int dialogWidth = windowWidth * 2 / 15;
-            detailsTable.getColumnModel().getColumn(3).setPreferredWidth(dialogWidth);
+                List<RowSorter.SortKey> sortKeyList = new ArrayList<>();
+                sortKeyList.add(new RowSorter.SortKey(modifiedTimeColumnIndex, SortOrder.DESCENDING));
+                sorter.setSortKeys(sortKeyList);
+                sorter.sort();
+            }
+
         } catch (Exception e) {
             e.printStackTrace();
         }
@@ -305,8 +343,8 @@ public class UX {
         JTextAreaOutputStream.hijack(loggingTA);
 
         if (readOnly) {
-            保存密码CheckBox.setEnabled(false);
-            保存密码CheckBox.setSelected(false);
+            savePwCheckBox.setEnabled(false);
+            savePwCheckBox.setSelected(false);
             channelBtn.setEnabled(false);
             channelPathTF.setEnabled(false);
 
@@ -332,6 +370,7 @@ public class UX {
     }
 
     private void showChooseAppFileDialog() {
+        System.out.println("输入地址:" + inPathTF.getText().toString());
         JFileChooser fileChooser = showFileChooser(inPathTF, inBtn, new FileFilter() {
             @Override
             public boolean accept(File f) {
@@ -430,13 +469,13 @@ public class UX {
         Properties mConfig = new Properties();
         String ksPath0 = ksPathTF.getText();
         mConfig.put("ks", ksPath0);
-        mConfig.put("in", in);
+        mConfig.put("in", new File(in).getParent());
         mConfig.put("ks-key-alias", keyAlias);
-        mConfig.put("in-filename", this.inputFileName);
-        mConfig.put("out", this.outPathTF.getText());
+        mConfig.put("in-filename", "");
+        mConfig.put("out",  new File(this.outPathTF.getText()).getParent());
         mConfig.put("channel-list", this.channelPathTF.getText());
 
-        if (保存密码CheckBox.isSelected()) {
+        if (savePwCheckBox.isSelected()) {
             mConfig.put("ks-pass", ksPass);
             mConfig.put("key-pass", keyPass);
         }
@@ -564,7 +603,7 @@ public class UX {
         try {
             String fileExtension = fileName.substring(fileName.lastIndexOf('.'));
             if (fileName.startsWith("dx_unsigned")) {
-                fileName = "顶象_" + fileName.substring("dx_unsigned".length());
+                fileName = "正式" + fileName.substring("dx_unsigned".length());
             }
             if (fileName.contains("_jiagu")) {
                 int index = fileName.indexOf("_jiagu");
@@ -648,10 +687,10 @@ public class UX {
         final JLabel label5 = new JLabel();
         label5.setText("输出apk/aab");
         panel1.add(label5, new GridConstraints(4, 0, 1, 1, GridConstraints.ANCHOR_EAST, GridConstraints.FILL_NONE, GridConstraints.SIZEPOLICY_FIXED, GridConstraints.SIZEPOLICY_FIXED, null, null, null, 0, false));
-        保存密码CheckBox = new JCheckBox();
-        保存密码CheckBox.setSelected(true);
-        保存密码CheckBox.setText("保存密码");
-        panel1.add(保存密码CheckBox, new GridConstraints(3, 1, 1, 1, GridConstraints.ANCHOR_WEST, GridConstraints.FILL_NONE, GridConstraints.SIZEPOLICY_CAN_SHRINK | GridConstraints.SIZEPOLICY_CAN_GROW, GridConstraints.SIZEPOLICY_FIXED, null, null, null, 0, false));
+        savePwCheckBox = new JCheckBox();
+        savePwCheckBox.setSelected(true);
+        savePwCheckBox.setText("保存密码");
+        panel1.add(savePwCheckBox, new GridConstraints(3, 1, 1, 1, GridConstraints.ANCHOR_WEST, GridConstraints.FILL_NONE, GridConstraints.SIZEPOLICY_CAN_SHRINK | GridConstraints.SIZEPOLICY_CAN_GROW, GridConstraints.SIZEPOLICY_FIXED, null, null, null, 0, false));
         ksPassPF = new JPasswordField();
         panel1.add(ksPassPF, new GridConstraints(2, 1, 1, 1, GridConstraints.ANCHOR_WEST, GridConstraints.FILL_HORIZONTAL, GridConstraints.SIZEPOLICY_WANT_GROW, GridConstraints.SIZEPOLICY_FIXED, null, new Dimension(150, -1), null, 0, false));
         channelPathTF = new JTextField();

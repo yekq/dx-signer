@@ -1,0 +1,28 @@
+*.iml
+.gradle
+/local.properties
+/.idea/workspace.xml
+/.idea/libraries
+.DS_Store
+/build
+/captures
+.externalNativeBuild
+
+# IDE
+.idea/
+
+# Native build artifacts
+obj/
+*.so
+
+# Logs and temporary files
+*.log
+*.tmp
+
+.vscode
+.git
+.github
+/patch
+signer/bin
+signer/build
+etc/cfg.properties
