@@ -42,11 +42,41 @@ import java.nio.file.Files;
 import java.nio.file.Path;
 import java.nio.file.Paths;
 import java.security.KeyStore;
-import java.util.*;
+import java.util.Arrays;
+import java.util.Collections;
+import java.util.Date;
+import java.util.Enumeration;
+import java.util.Locale;
+import java.util.Properties;
+import java.util.Set;
 import java.util.concurrent.ExecutorService;
 import java.util.concurrent.Executors;
 
-import javax.swing.*;
+import javax.swing.Icon;
+import javax.swing.ImageIcon;
+import javax.swing.JButton;
+import javax.swing.JCheckBox;
+import javax.swing.JComboBox;
+import javax.swing.JComponent;
+import javax.swing.JDialog;
+import javax.swing.JFileChooser;
+import javax.swing.JFrame;
+import javax.swing.JLabel;
+import javax.swing.JOptionPane;
+import javax.swing.JPanel;
+import javax.swing.JPasswordField;
+import javax.swing.JProgressBar;
+import javax.swing.JScrollPane;
+import javax.swing.JTabbedPane;
+import javax.swing.JTable;
+import javax.swing.JTextArea;
+import javax.swing.JTextField;
+import javax.swing.LookAndFeel;
+import javax.swing.RowSorter;
+import javax.swing.SortOrder;
+import javax.swing.SwingUtilities;
+import javax.swing.UIManager;
+import javax.swing.UnsupportedLookAndFeelException;
 import javax.swing.event.PopupMenuEvent;
 import javax.swing.event.PopupMenuListener;
 import javax.swing.filechooser.FileFilter;
@@ -58,11 +88,24 @@ import javax.swing.text.JTextComponent;
 
 import dx.channel.ApkSigns;
 
-public class UX {
+public final class UX {
+    private static final String AUTO_KEY_ALIAS = "{{auto}}";
+    private static final String CONFIG_DIRECTORY = "etc";
+    private static final String CONFIG_FILE_NAME = "cfg.properties";
+    private static final String CONFIG_KEY_STORE = "ks";
+    private static final String CONFIG_INPUT = "in";
+    private static final String CONFIG_OUTPUT = "out";
+    private static final String CONFIG_KEY_ALIAS = "ks-key-alias";
+    private static final String CONFIG_INPUT_FILE_NAME = "in-filename";
+    private static final String CONFIG_CHANNEL_LIST = "channel-list";
+    private static final String CONFIG_KEY_STORE_PASSWORD = "ks-pass";
+    private static final String CONFIG_KEY_PASSWORD = "key-pass";
     private static final String FILE_CHOOSER_SORT_LISTENER_INSTALLED =
             "dx.signer.fileChooserSortListenerInstalled";
-    private static String rootPath = "";
-    ExecutorService es = Executors.newSingleThreadExecutor();
+    private static final int DETAILS_VIEW = 1;
+    private static String applicationRoot = "";
+    private final ExecutorService signingExecutor = Executors.newSingleThreadExecutor();
+    // These fields are bound by UX.form; binding names must remain synchronized.
     private JButton inBtn;
     private JTextField inPathTF;
     private JTabbedPane tabbedPane1;
@@ -72,7 +115,7 @@ public class UX {
     private JButton signBtn;
     private JTextArea loggingTA;
     private JCheckBox savePwCheckBox;
-    private JComboBox keyAliasCB;
+    private JComboBox<String> keyAliasCB;
     private JPasswordField keyPassPF;
     private JPasswordField ksPassPF;
     public JPanel topPanel;
@@ -85,123 +128,119 @@ public class UX {
     private boolean readOnly = false;
     private String inputFileName = "";
 
-    private SignerConfigBean configBean;
-    private static int windowWidth;
-    private static int windowHeight;
-    private static boolean isShow;
+    private static int mainWindowWidth;
+    private static int mainWindowHeight;
+    private static boolean initialChooserShown;
 
     public static void main(String[] args) throws IOException {
-
-        System.setProperty(SimpleLogger.SHOW_LOG_NAME_KEY, "false");
-        System.setProperty(SimpleLogger.SHOW_THREAD_NAME_KEY, "false");
-
-        // 设置全局样式属性
-//        UIManager.put("OptionPane.background", Color.LIGHT_GRAY);
-//        UIManager.put("Panel.background", Color.LIGHT_GRAY);
-//        UIManager.put("Button.background", Color.WHITE);
-//        UIManager.put("Button.foreground", Color.BLACK);
-
-        if (args.length >= 1 && args[0].equals("sign")) {
+        configureLoggingProperties();
+        if (args.length > 0 && "sign".equals(args[0])) {
             CommandLine.main(args);
             return;
         }
-        if (args.length >= 1 && args[0].equals("-path")) {
-            rootPath = args[1];
+
+        applicationRoot = parseApplicationRoot(args);
+        SwingUtilities.invokeLater(UX::showMainWindow);
+    }
+
+    private static void configureLoggingProperties() {
+        System.setProperty(SimpleLogger.SHOW_LOG_NAME_KEY, "false");
+        System.setProperty(SimpleLogger.SHOW_THREAD_NAME_KEY, "false");
+    }
+
+    private static String parseApplicationRoot(String[] args) {
+        if (args.length == 0) {
+            return "";
         }
+        if (args.length == 2 && "-path".equals(args[0])) {
+            return args[1];
+        }
+        throw new IllegalArgumentException("Usage: UX [-path <application-root>]");
+    }
 
-        // make the frame half the height and width
+    private static void showMainWindow() {
         Dimension screenSize = Toolkit.getDefaultToolkit().getScreenSize();
-        windowWidth = screenSize.width * 9 / 10;
-        windowHeight = screenSize.height * 9 / 10;
-        isShow = false;
-
-        JFrame frame = new JFrame("Apk签名&多渠道工具:" + rootPath);
+        mainWindowWidth = screenSize.width * 9 / 10;
+        mainWindowHeight = screenSize.height * 9 / 10;
+        initialChooserShown = false;
 
         UX ux = new UX();
-        frame.addWindowFocusListener(new WindowFocusListener() {
-            @Override
-            public void windowGainedFocus(WindowEvent e) {
-                if (isShow) {
-                    return;
-                }
-                isShow = true;
-                ux.showChooseAppFileDialog();
-            }
-
-            @Override
-            public void windowLostFocus(WindowEvent e) {
-                // Do Nothing
-            }
-        });
+        JFrame frame = new JFrame("Apk签名&多渠道工具:" + applicationRoot);
         frame.setContentPane(ux.topPanel);
         frame.setDefaultCloseOperation(JFrame.EXIT_ON_CLOSE);
-
-        frame.pack();
-
-        frame.setSize(windowWidth, windowHeight);
-
-        // here's the part where i center the jframe on screen
+        frame.setSize(mainWindowWidth, mainWindowHeight);
         frame.setLocationRelativeTo(null);
+        frame.addWindowFocusListener(new WindowFocusListener() {
+            @Override
+            public void windowGainedFocus(WindowEvent event) {
+                if (!initialChooserShown) {
+                    initialChooserShown = true;
+                    ux.showChooseAppFileDialog();
+                }
+            }
 
+            @Override
+            public void windowLostFocus(WindowEvent event) {
+                // The initial chooser is the only focus-driven action.
+            }
+        });
         frame.setVisible(true);
     }
 
-    /**
-     * This method returns JFileChooser with Windows look instead of native java
-     */
+    /** Creates a chooser that uses the native system appearance and a large details view. */
     public static JFileChooser windowsJFileChooser() {
-        LookAndFeel previousLF = UIManager.getLookAndFeel();
+        Dimension screenSize = Toolkit.getDefaultToolkit().getScreenSize();
+        int baseWidth = mainWindowWidth > 0 ? mainWindowWidth : screenSize.width * 9 / 10;
+        int baseHeight = mainWindowHeight > 0 ? mainWindowHeight : screenSize.height * 9 / 10;
+        int dialogWidth = baseWidth * 3 / 4;
+        int dialogHeight = baseHeight * 3 / 4;
 
-        // 获取屏幕大小
-        int dialogWidth = windowWidth * 3 / 4;
-        int dialogHeight = windowHeight * 3 / 4;
+        LookAndFeel previousLookAndFeel = UIManager.getLookAndFeel();
         JFileChooser chooser;
         try {
             UIManager.setLookAndFeel(UIManager.getSystemLookAndFeelClassName());
             chooser = new JFileChooser() {
-
                 @Override
                 protected JDialog createDialog(Component parent) throws HeadlessException {
-                    // 计算 JFileChooser 的尺寸
-//                    Dimension dialogSize = getPreferredSize();
-                    Dimension screenSize = Toolkit.getDefaultToolkit().getScreenSize();
-                    // 计算中心位置
-                    int x = (screenSize.width - dialogWidth) / 2;
-                    int y = (screenSize.height - dialogHeight) / 2;
-                    // 设置 JFileChooser 的位置
                     JDialog dialog = super.createDialog(parent);
-                    dialog.setLocation(x, y);
-                    setFileChooserDetailsView(this);
+                    dialog.setLocationRelativeTo(parent);
+                    configureFileChooserDetailsView(this);
                     return dialog;
                 }
             };
-            UIManager.setLookAndFeel(previousLF);
-        } catch (IllegalAccessException | UnsupportedLookAndFeelException | InstantiationException | ClassNotFoundException e) {
-            e.printStackTrace();
+        } catch (ReflectiveOperationException | UnsupportedLookAndFeelException exception) {
+            System.err.println("无法启用系统文件选择器外观: " + exception.getMessage());
             chooser = new JFileChooser();
+        } finally {
+            try {
+                UIManager.setLookAndFeel(previousLookAndFeel);
+            } catch (UnsupportedLookAndFeelException exception) {
+                System.err.println("无法恢复界面外观: " + exception.getMessage());
+            }
         }
-        setFileChooserDetailsView(chooser);
+
+        configureFileChooserDetailsView(chooser);
         chooser.setFileSelectionMode(JFileChooser.FILES_ONLY);
         chooser.setPreferredSize(new Dimension(dialogWidth, dialogHeight));
-        // Enable the address bar for input
         chooser.setControlButtonsAreShown(true);
         chooser.setMultiSelectionEnabled(false);
         return chooser;
     }
 
     /**
-     * 设置字体,默认排序(已经废弃)
+     * Keeps details view sorted by modification time after the chooser changes directories.
+     * The Windows chooser exposes this behavior only through its internal file pane API.
      */
-    private static void setFileChooserDetailsView(JFileChooser fileChooser) {
+    private static void configureFileChooserDetailsView(JFileChooser fileChooser) {
         applyModifiedTimeSort(fileChooser);
-
-        if (fileChooser.getClientProperty(FILE_CHOOSER_SORT_LISTENER_INSTALLED) == null) {
-            fileChooser.putClientProperty(FILE_CHOOSER_SORT_LISTENER_INSTALLED, Boolean.TRUE);
-            fileChooser.addPropertyChangeListener(JFileChooser.DIRECTORY_CHANGED_PROPERTY,
-                    event -> applyModifiedTimeSort(fileChooser));
+        if (fileChooser.getClientProperty(FILE_CHOOSER_SORT_LISTENER_INSTALLED) != null) {
+            return;
         }
-    }
 
+        fileChooser.putClientProperty(FILE_CHOOSER_SORT_LISTENER_INSTALLED, Boolean.TRUE);
+        fileChooser.addPropertyChangeListener(JFileChooser.DIRECTORY_CHANGED_PROPERTY,
+                event -> applyModifiedTimeSort(fileChooser));
+    }
     private static void applyModifiedTimeSort(JFileChooser fileChooser) {
         SwingUtilities.invokeLater(() -> {
             try {
@@ -212,7 +251,7 @@ public class UX {
 
                 Method setViewType = filePane.getClass().getDeclaredMethod("setViewType", int.class);
                 setViewType.setAccessible(true);
-                setViewType.invoke(filePane, 1);
+                setViewType.invoke(filePane, DETAILS_VIEW);
 
                 Field detailsTableField = filePane.getClass().getDeclaredField("detailsTable");
                 detailsTableField.setAccessible(true);
@@ -241,347 +280,361 @@ public class UX {
                 int viewColumn = detailsTable.convertColumnIndexToView(modifiedTimeColumn);
                 if (viewColumn >= 0) {
                     detailsTable.getColumnModel().getColumn(viewColumn)
-                            .setPreferredWidth(windowWidth * 2 / 15);
+                            .setPreferredWidth(mainWindowWidth * 2 / 15);
                 }
-            } catch (ReflectiveOperationException | RuntimeException e) {
-                e.printStackTrace();
+            } catch (ReflectiveOperationException | RuntimeException exception) {
+                System.err.println("无法设置文件列表排序: " + exception.getMessage());
             }
         });
     }
-    /**
-     * 使用反射设置排序方式
-     *
-     * @param fileChooser JFileChooser 实例
-     */
-    private static void setFileChooserDetailsView2(JFileChooser fileChooser) {
-        try {
-            // 获取 UI 实例
-            Object ui = fileChooser.getUI();
-
-            // 获取 filePane 字段
-            Field filePaneField = ui.getClass().getDeclaredField("filePane");
-            filePaneField.setAccessible(true);
-            Object filePane = filePaneField.get(ui);
-
-            // 获取 getRowSorter 方法
-            Method getRowSorter = filePane.getClass().getDeclaredMethod("getRowSorter");
-            getRowSorter.setAccessible(true);
-            Object rowSorter = getRowSorter.invoke(filePane);
-
-            if (rowSorter instanceof TableRowSorter) {
-                @SuppressWarnings("unchecked")
-                TableRowSorter<?> sorter = (TableRowSorter<?>) rowSorter;
-
-                // 一般情况下“修改时间”在第 3 列或第 4 列，可调试确认
-                int modifiedTimeColumnIndex = 3;
-
-                List<RowSorter.SortKey> sortKeyList = new ArrayList<>();
-                sortKeyList.add(new RowSorter.SortKey(modifiedTimeColumnIndex, SortOrder.DESCENDING));
-                sorter.setSortKeys(sortKeyList);
-                sorter.sort();
-            }
-
-        } catch (Exception e) {
-            e.printStackTrace();
-        }
+    public UX() {
+        configureKeyAliasSelector();
+        loadLocalConfig();
+        configureActions();
+        configureLogging();
+        applyReadOnlyState();
     }
 
-    public UX() {
-        loadLocalConfig();
+    private void configureActions() {
+        inBtn.addActionListener(event -> showChooseAppFileDialog());
+        ksBtn.addActionListener(event -> showKeystoreFileDialog());
+        channelBtn.addActionListener(event -> showChannelFileDialog());
+        signBtn.addActionListener(event -> onSubmitClick());
+    }
 
-        inBtn.addActionListener(e -> showChooseAppFileDialog());
-        ksBtn.addActionListener(e -> showKeystoreFileDialog());
-        channelBtn.addActionListener(e -> showChannelFileDialog());
-        signBtn.addActionListener(e -> onSubmitClick());
-
-        keyAliasCB.removeAllItems();
-        keyAliasCB.addItem("{{auto}}");
-        keyAliasCB.setSelectedItem("{{auto}}");
+    private void configureKeyAliasSelector() {
+        resetKeyAliasOptions();
         keyAliasCB.addPopupMenuListener(new PopupMenuListener() {
             @Override
-            public void popupMenuWillBecomeVisible(PopupMenuEvent e) {
-                KeyStore keyStore = null;
-                try {
-                    byte[] d = Files.readAllBytes(Paths.get(ksPathTF.getText()));
-                    Set<String> keyList = new HashSet<>();
-                    keyList.add(new String(ksPassPF.getPassword()));
-                    keyStore = ApkSigns.loadKeyStore(d, keyList);
-                } catch (Exception ignore) {
-                    keyStore = null;
-                }
-
-                if (keyStore != null) {
-                    keyAliasCB.removeAllItems();
-                    keyAliasCB.addItem("{{auto}}");
-                    try {
-                        Enumeration<String> aliases = keyStore.aliases();
-                        while (aliases.hasMoreElements()) {
-                            String alias = aliases.nextElement();
-                            keyAliasCB.addItem(alias);
-                        }
-                    } catch (Exception ignore) {
-                    }
-                    keyAliasCB.setSelectedItem("{{auto}}");
-                }
+            public void popupMenuWillBecomeVisible(PopupMenuEvent event) {
+                loadKeyAliases();
             }
 
             @Override
-            public void popupMenuWillBecomeInvisible(PopupMenuEvent e) {
-
+            public void popupMenuWillBecomeInvisible(PopupMenuEvent event) {
+                // No action is required when the list closes.
             }
 
             @Override
-            public void popupMenuCanceled(PopupMenuEvent e) {
-
+            public void popupMenuCanceled(PopupMenuEvent event) {
+                // No action is required when selection is canceled.
             }
         });
+    }
 
-
-        DefaultCaret caret = (DefaultCaret) loggingTA.getCaret();
-        caret.setUpdatePolicy(DefaultCaret.ALWAYS_UPDATE);
-
-        JTextAreaOutputStream.hijack(loggingTA);
-
-        if (readOnly) {
-            savePwCheckBox.setEnabled(false);
-            savePwCheckBox.setSelected(false);
-            channelBtn.setEnabled(false);
-            channelPathTF.setEnabled(false);
-
-            inBtn.setEnabled(false);
-            inPathTF.setEnabled(false);
-
-            if (ksPathTF.getText().length() > 0) {
-                ksBtn.setEnabled(false);
-                ksPathTF.setEnabled(false);
-                keyAliasCB.setEnabled(false);
-                ksPassPF.setEnabled(false);
-                keyPassPF.setEnabled(false);
+    private void loadKeyAliases() {
+        char[] password = ksPassPF.getPassword();
+        try {
+            byte[] keyStoreBytes = Files.readAllBytes(Paths.get(ksPathTF.getText()));
+            Set<String> passwords = Collections.singleton(new String(password));
+            KeyStore keyStore = ApkSigns.loadKeyStore(keyStoreBytes, passwords);
+            if (keyStore == null) {
+                return;
             }
-            outPathTF.setEnabled(false);
+
+            resetKeyAliasOptions();
+            Enumeration<String> aliases = keyStore.aliases();
+            while (aliases.hasMoreElements()) {
+                keyAliasCB.addItem(aliases.nextElement());
+            }
+            keyAliasCB.setSelectedItem(AUTO_KEY_ALIAS);
+        } catch (Exception exception) {
+            log("无法读取 KeyStore 别名: " + exception.getMessage());
+        } finally {
+            Arrays.fill(password, '\0');
         }
     }
 
-    private JFileChooser showFileChooser(JTextComponent text, Component btn, FileFilter filter) {
+    private void resetKeyAliasOptions() {
+        keyAliasCB.removeAllItems();
+        keyAliasCB.addItem(AUTO_KEY_ALIAS);
+        keyAliasCB.setSelectedItem(AUTO_KEY_ALIAS);
+    }
+
+    private void configureLogging() {
+        DefaultCaret caret = (DefaultCaret) loggingTA.getCaret();
+        caret.setUpdatePolicy(DefaultCaret.ALWAYS_UPDATE);
+        JTextAreaOutputStream.hijack(loggingTA);
+    }
+
+    private void applyReadOnlyState() {
+        if (!readOnly) {
+            return;
+        }
+
+        savePwCheckBox.setEnabled(false);
+        savePwCheckBox.setSelected(false);
+        channelBtn.setEnabled(false);
+        channelPathTF.setEnabled(false);
+        inBtn.setEnabled(false);
+        inPathTF.setEnabled(false);
+        outPathTF.setEnabled(false);
+
+        if (!ksPathTF.getText().isEmpty()) {
+            ksBtn.setEnabled(false);
+            ksPathTF.setEnabled(false);
+            keyAliasCB.setEnabled(false);
+            ksPassPF.setEnabled(false);
+            keyPassPF.setEnabled(false);
+        }
+    }
+
+    private JFileChooser createFileChooser(JTextComponent pathField, FileFilter filter) {
         JFileChooser fileChooser = windowsJFileChooser();
         fileChooser.setFileFilter(filter);
-        fileChooser.setCurrentDirectory(new File(text.getText()));
+
+        String currentPath = pathField.getText().trim();
+        if (!currentPath.isEmpty()) {
+            File currentFile = new File(currentPath);
+            fileChooser.setCurrentDirectory(currentFile.isDirectory() ? currentFile : currentFile.getParentFile());
+        }
         return fileChooser;
     }
 
-    private void showChooseAppFileDialog() {
-        System.out.println("输入地址:" + inPathTF.getText().toString());
-        JFileChooser fileChooser = showFileChooser(inPathTF, inBtn, new FileFilter() {
+    private static FileFilter createExtensionFilter(String description, String... extensions) {
+        return new FileFilter() {
             @Override
-            public boolean accept(File f) {
-                String s = f.getName().toLowerCase();
-                return f.isDirectory() || s.endsWith(".apk") || s.endsWith(".aab");
+            public boolean accept(File file) {
+                if (file.isDirectory()) {
+                    return true;
+                }
+                String lowerCaseName = file.getName().toLowerCase(Locale.ROOT);
+                for (String extension : extensions) {
+                    if (lowerCaseName.endsWith(extension)) {
+                        return true;
+                    }
+                }
+                return false;
             }
 
             @Override
             public String getDescription() {
-                return "*.apk,*.aab";
+                return description;
             }
-        });
-        int result = fileChooser.showOpenDialog(inBtn);
-        if (result == JFileChooser.APPROVE_OPTION) {
-            File file = fileChooser.getSelectedFile();
-            setInput(file);
+        };
+    }
+
+    private void showChooseAppFileDialog() {
+        JFileChooser fileChooser = createFileChooser(inPathTF,
+                createExtensionFilter("*.apk, *.aab", ".apk", ".aab"));
+        if (fileChooser.showOpenDialog(inBtn) == JFileChooser.APPROVE_OPTION) {
+            setInput(fileChooser.getSelectedFile());
             onSubmitClick();
         }
     }
 
     private void showKeystoreFileDialog() {
-        JFileChooser fileChooser = showFileChooser(ksPathTF, ksBtn, new FileFilter() {
-            @Override
-            public boolean accept(File f) {
-                String s = f.getName().toLowerCase();
-                return f.isDirectory() || s.endsWith(".ks") || s.endsWith(".keystore") || s.endsWith(".p12") || s.endsWith(".pfx") || s.endsWith(".jks");
-            }
-
-            @Override
-            public String getDescription() {
-                return "*.ks, *.keystore, *.p12, *.pfx, *.jks";
-            }
-        });
-        int result = fileChooser.showOpenDialog(ksBtn);
-        if (result == JFileChooser.APPROVE_OPTION) {
-            File file = fileChooser.getSelectedFile();
-            ksPathTF.setText(file.getAbsolutePath());
+        JFileChooser fileChooser = createFileChooser(ksPathTF,
+                createExtensionFilter("*.ks, *.keystore, *.p12, *.pfx, *.jks",
+                        ".ks", ".keystore", ".p12", ".pfx", ".jks"));
+        if (fileChooser.showOpenDialog(ksBtn) == JFileChooser.APPROVE_OPTION) {
+            ksPathTF.setText(fileChooser.getSelectedFile().getAbsolutePath());
         }
     }
 
     private void showChannelFileDialog() {
-        JFileChooser fileChooser = showFileChooser(channelPathTF, channelBtn, new FileFilter() {
-            @Override
-            public boolean accept(File f) {
-                String s = f.getName().toLowerCase();
-                return f.isDirectory() || (f.isFile() && s.endsWith(".txt"));
-            }
-
-            @Override
-            public String getDescription() {
-                return "*.txt";
-            }
-        });
-        int result = fileChooser.showOpenDialog(channelBtn);
-        if (result == JFileChooser.APPROVE_OPTION) {
-            File file = fileChooser.getSelectedFile();
-            channelPathTF.setText(file.getAbsolutePath());
+        JFileChooser fileChooser = createFileChooser(channelPathTF,
+                createExtensionFilter("*.txt", ".txt"));
+        if (fileChooser.showOpenDialog(channelBtn) == JFileChooser.APPROVE_OPTION) {
+            channelPathTF.setText(fileChooser.getSelectedFile().getAbsolutePath());
         }
     }
-
     private void onSubmitClick() {
-        String channelPath = channelPathTF.getText();
-
-        String out = outPathTF.getText();
-        Path outApkDir = CommandLine.detectOutDir(out);
-        File file = outApkDir.toFile();
-        if (channelPath != null && !channelPath.isEmpty()) {
-            if (Files.exists(outApkDir)) {
-                if (JOptionPane.YES_OPTION != JOptionPane.showConfirmDialog(topPanel, "多渠道输出APK目录已经存在，是否覆盖:\n" + outApkDir, "输出APK已经存在，是否覆盖", JOptionPane.OK_CANCEL_OPTION)) {
-                    return;
-                }
-            }
-        } else {
-            if (file.isFile() && file.exists() && JOptionPane.YES_OPTION != JOptionPane.showConfirmDialog(topPanel, "输出APK已经存在，是否覆盖:\n" + out, "输出APK已经存在，是否覆盖", JOptionPane.OK_CANCEL_OPTION)) {
-                return;
-            }
-        }
-
-        signBtn.setEnabled(false);
-
-        String in = inPathTF.getText();
-
-        String ksPass;
-        String keyPass;
+        SigningRequest request;
         try {
-            ksPass = new String(ksPassPF.getPassword());
-        } catch (NullPointerException ignore) {
-            ksPass = "";
+            request = createSigningRequest();
+        } catch (RuntimeException exception) {
+            JOptionPane.showMessageDialog(topPanel, "签名参数无效: " + exception.getMessage(),
+                    "参数错误", JOptionPane.ERROR_MESSAGE);
+            return;
         }
-        try {
-            keyPass = new String(keyPassPF.getPassword());
-        } catch (NullPointerException ignore) {
-            keyPass = null;
+
+        if (!confirmOverwrite(request)) {
+            return;
         }
-        String keyAlias = (String) keyAliasCB.getSelectedItem();
-        Properties mConfig = new Properties();
-        String ksPath0 = ksPathTF.getText();
-        mConfig.put("ks", ksPath0);
-        mConfig.put("in", new File(in).getParent());
-        mConfig.put("ks-key-alias", keyAlias);
-        mConfig.put("in-filename", "");
-        mConfig.put("out",  new File(this.outPathTF.getText()).getParent());
-        mConfig.put("channel-list", this.channelPathTF.getText());
+
+        saveLocalConfig(request);
+        loggingTA.setText("");
+        setSigningInProgress(true, request.originalProgressText);
+        signingExecutor.submit(() -> executeSigning(request));
+    }
+
+    private SigningRequest createSigningRequest() {
+        Path inputPath = Paths.get(inPathTF.getText().trim());
+        Path outputPath = Paths.get(outPathTF.getText().trim());
+        Path keyStorePath = Paths.get(ksPathTF.getText().trim());
+        String channelListValue = channelPathTF.getText().trim();
+        Path channelListPath = channelListValue.isEmpty() ? null : Paths.get(channelListValue);
+        String keyStorePassword = new String(ksPassPF.getPassword());
+        String keyPassword = new String(keyPassPF.getPassword());
+        String selectedAlias = (String) keyAliasCB.getSelectedItem();
+        String keyAlias = selectedAlias == null ? AUTO_KEY_ALIAS : selectedAlias;
+
+        return new SigningRequest(inputPath, outputPath, keyStorePath, channelListPath,
+                inputFileName, keyStorePassword, keyPassword, keyAlias, progressBar1.getString());
+    }
+
+    private boolean confirmOverwrite(SigningRequest request) {
+        if (request.hasChannelList()) {
+            Path outputDirectory = CommandLine.detectOutDir(request.outputPath.toString());
+            return !Files.exists(outputDirectory) || JOptionPane.YES_OPTION == JOptionPane.showConfirmDialog(
+                    topPanel,
+                    "多渠道输出APK目录已经存在，是否覆盖:\n" + outputDirectory,
+                    "输出APK已经存在，是否覆盖",
+                    JOptionPane.YES_NO_OPTION);
+        }
+
+        return !Files.isRegularFile(request.outputPath) || JOptionPane.YES_OPTION == JOptionPane.showConfirmDialog(
+                topPanel,
+                "输出APK已经存在，是否覆盖:\n" + request.outputPath,
+                "输出APK已经存在，是否覆盖",
+                JOptionPane.YES_NO_OPTION);
+    }
+
+    /** Persists non-secret paths and optionally the passwords selected by the user. */
+    private void saveLocalConfig(SigningRequest request) {
+        if (readOnly) {
+            return;
+        }
+
+        Properties properties = new Properties();
+        properties.setProperty(CONFIG_KEY_STORE, request.keyStorePath.toString());
+        properties.setProperty(CONFIG_INPUT, parentPath(request.inputPath));
+        properties.setProperty(CONFIG_KEY_ALIAS, request.keyAlias);
+        properties.setProperty(CONFIG_INPUT_FILE_NAME, "");
+        properties.setProperty(CONFIG_OUTPUT, parentPath(request.outputPath));
+        properties.setProperty(CONFIG_CHANNEL_LIST,
+                request.channelListPath == null ? "" : request.channelListPath.toString());
 
         if (savePwCheckBox.isSelected()) {
-            mConfig.put("ks-pass", ksPass);
-            mConfig.put("key-pass", keyPass);
+            properties.setProperty(CONFIG_KEY_STORE_PASSWORD, request.keyStorePassword);
+            properties.setProperty(CONFIG_KEY_PASSWORD, request.keyPassword);
         }
 
-        if (!readOnly) {
-            try {
-                Path configFile = getConfigPath();
-                try (BufferedWriter r = Files.newBufferedWriter(configFile, StandardCharsets.UTF_8)) {
-                    mConfig.store(r, "#");
-                }
-            } catch (IOException ignore) {
+        try (BufferedWriter writer = Files.newBufferedWriter(getConfigPath(), StandardCharsets.UTF_8)) {
+            properties.store(writer, "#");
+        } catch (IOException exception) {
+            log("保存配置失败: " + exception.getMessage());
+        }
+    }
+
+    private static String parentPath(Path path) {
+        Path parent = path.toAbsolutePath().getParent();
+        return parent == null ? path.toString() : parent.toString();
+    }
+
+    private void executeSigning(SigningRequest request) {
+        try {
+            int result;
+            Path actualOutputPath;
+            if (request.hasChannelList()) {
+                actualOutputPath = CommandLine.detectOutDir(request.outputPath.toString());
+                result = SignWorker.signChannelApk(
+                        request.inputPath,
+                        request.inputFileName,
+                        actualOutputPath,
+                        request.channelListPath,
+                        request.keyStorePath,
+                        request.keyStorePassword,
+                        request.keyAlias,
+                        request.keyPassword);
+            } else {
+                actualOutputPath = request.outputPath;
+                result = SignWorker.signApk(
+                        request.inputPath,
+                        actualOutputPath,
+                        request.keyStorePath,
+                        request.keyStorePassword,
+                        request.keyAlias,
+                        request.keyPassword);
             }
+
+            Path completedOutputPath = actualOutputPath;
+            SwingUtilities.invokeLater(() -> showSigningResult(request, completedOutputPath, result));
+        } catch (Exception exception) {
+            log("签名失败: " + exception.getMessage());
+            SwingUtilities.invokeLater(() -> JOptionPane.showMessageDialog(
+                    topPanel, "签名失败: " + exception.getMessage(), "签名结果", JOptionPane.ERROR_MESSAGE));
+        } finally {
+            SwingUtilities.invokeLater(() -> setSigningInProgress(false, request.originalProgressText));
+        }
+    }
+
+    private void showSigningResult(SigningRequest request, Path outputPath, int result) {
+        if (result != 0) {
+            JOptionPane.showMessageDialog(topPanel,
+                    request.hasChannelList() ? "多渠道失败" : "签名失败",
+                    "签名结果",
+                    JOptionPane.ERROR_MESSAGE);
+            return;
         }
 
-        loggingTA.setText("");
+        if (request.hasChannelList()) {
+            JOptionPane.showMessageDialog(topPanel, "多渠道成功, 输出APK文件夹\n" + outputPath);
+            return;
+        }
 
-        String finalKsPass = ksPass;
-        String finalKeyPass = keyPass;
-        String pbOrg = progressBar1.getString();
-        progressBar1.setString("签名中...");
+        int choice = JOptionPane.showConfirmDialog(topPanel,
+                "签名成功, 输出APK\n" + outputPath,
+                "签名结果",
+                JOptionPane.YES_NO_OPTION);
+        if (choice == JOptionPane.YES_OPTION && outputPath.toFile().getParent() != null) {
+            Tools.openDir(topPanel, outputPath.toFile().getParent());
+        }
+    }
+
+    private void setSigningInProgress(boolean signing, String idleText) {
+        signBtn.setEnabled(!signing);
+        progressBar1.setIndeterminate(signing);
+        progressBar1.setString(signing ? "签名中..." : idleText);
         progressBar1.setStringPainted(true);
-        progressBar1.setIndeterminate(true);
-
-        Path ksPath = Paths.get(ksPath0);
-        Path input = Paths.get(in);
-
-        es.submit(() -> {
-            try {
-                int result;
-
-                if (channelPath != null && !channelPath.isEmpty()) {
-                    Path apkDir = CommandLine.detectOutDir(out);
-                    result = SignWorker.signChannelApk(input, inputFileName,
-                            apkDir,
-                            Paths.get(channelPath),
-                            ksPath, finalKsPass, keyAlias, finalKeyPass);
-                    progressBar1.setIndeterminate(false);
-                    progressBar1.setString(pbOrg);
-                    if (result == 0) {
-                        JOptionPane.showMessageDialog(topPanel, "多渠道成功, 输出APK文件夹\n" + apkDir);
-                    } else {
-                        JOptionPane.showMessageDialog(topPanel, "多渠道失败");
-                    }
-                } else {
-                    Path outPath = Paths.get(out);
-                    result = SignWorker.signApk(input, outPath, ksPath,
-                            finalKsPass, keyAlias, finalKeyPass);
-                    progressBar1.setIndeterminate(false);
-                    progressBar1.setString(pbOrg);
-                    if (result == 0) {
-                        if (JOptionPane.YES_OPTION == JOptionPane.showConfirmDialog(topPanel, "签名成功, 输出APK\n" + out, "签名结果", JOptionPane.OK_CANCEL_OPTION)) {
-                            Tools.openDir(topPanel, outPath.toFile().getParent());
-                        }
-                    } else {
-                        JOptionPane.showMessageDialog(topPanel, "签名失败");
-                    }
-                }
-
-            } catch (Exception ex) {
-                ex.printStackTrace();
-            }
-
-            signBtn.setEnabled(true);
-        });
     }
-
     private void log(String message) {
-        if (null == loggingTA) {
-            System.out.append(message);
-        } else {
-            loggingTA.append("\n");
+        if (loggingTA == null) {
+            System.out.println(message);
+            return;
+        }
+
+        Runnable appendMessage = () -> {
+            if (loggingTA.getDocument().getLength() > 0) {
+                loggingTA.append(System.lineSeparator());
+            }
             loggingTA.append(message);
+        };
+        if (SwingUtilities.isEventDispatchThread()) {
+            appendMessage.run();
+        } else {
+            SwingUtilities.invokeLater(appendMessage);
         }
     }
-
 
     private void loadLocalConfig() {
         try {
             Path configFile = getConfigPath();
-            Properties initConfig = CommandLine.load(configFile);
-            configBean = new SignerConfigBean(initConfig);
-
-            readOnly = configBean.isReadOnly();
-            ksPathTF.setText(configBean.getKs());
-
-            String inPath = configBean.getIn();
-            if (inPath.length() > 0) {
-                setInput(new File(inPath), configBean.getInFilename());
+            if (!Files.isRegularFile(configFile)) {
+                return;
             }
-            String outPath = configBean.getOut();
-            if (outPath.length() > 0) {
-                outPathTF.setText(outPath);
-            }
-            ksPassPF.setText(configBean.getKsPass());
-            keyPassPF.setText(configBean.getKsPass());
-            channelPathTF.setText(configBean.getChannelList());
 
-            String s = configBean.getKsKeyAlias();
-            if (!s.equals("{{auto}}") && s.length() != 0) {
-                keyAliasCB.addItem(s);
-                keyAliasCB.setSelectedItem(s);
+            SignerConfigBean config = new SignerConfigBean(CommandLine.load(configFile));
+            readOnly = config.isReadOnly();
+            ksPathTF.setText(config.getKs());
+            ksPassPF.setText(config.getKsPass());
+            keyPassPF.setText(config.getKeyPass());
+            channelPathTF.setText(config.getChannelList());
+
+            if (!config.getIn().isEmpty()) {
+                setInput(new File(config.getIn()), config.getInFilename());
             }
-            inPathTF.setText(configBean.getIn());
-        } catch (Exception ignore) {
-            ignore.printStackTrace();
-            configBean = new SignerConfigBean();
+            if (!config.getOut().isEmpty()) {
+                outPathTF.setText(config.getOut());
+            }
+            if (!AUTO_KEY_ALIAS.equals(config.getKsKeyAlias()) && !config.getKsKeyAlias().isEmpty()) {
+                keyAliasCB.addItem(config.getKsKeyAlias());
+                keyAliasCB.setSelectedItem(config.getKsKeyAlias());
+            }
+            inPathTF.setText(config.getIn());
+        } catch (IOException exception) {
+            log("读取配置失败: " + exception.getMessage());
         }
     }
 
@@ -589,53 +642,75 @@ public class UX {
         setInput(file, null);
     }
 
-    private void setInput(File file, String name) {
-        if (name == null || name.length() == 0) {
-            name = file.getName();
-        }
-        this.inputFileName = name;
+    private void setInput(File file, String configuredFileName) {
+        inputFileName = configuredFileName == null || configuredFileName.isEmpty()
+                ? file.getName()
+                : configuredFileName;
         inPathTF.setText(file.getAbsolutePath());
-
-        String fileName = inputFileName;
-        if (fileName == null || fileName.isEmpty()) {
-            return;
-        }
-        try {
-            String fileExtension = fileName.substring(fileName.lastIndexOf('.'));
-            if (fileName.startsWith("dx_unsigned")) {
-                fileName = "正式" + fileName.substring("dx_unsigned".length());
-            }
-            if (fileName.contains("_jiagu")) {
-                int index = fileName.indexOf("_jiagu");
-                fileName = fileName.substring(0, index - 4) + fileExtension;
-            }
-            if (fileName.contains("_unsign")) {
-                int index = fileName.indexOf("_unsign");
-                fileName = fileName.substring(0, index) + fileExtension;
-            }
-            File out = new File(file.getParent(), fileName);
-            outPathTF.setText(out.toString());
-        } catch (Exception e) {
-            e.printStackTrace();
-        }
+        outPathTF.setText(new File(file.getParent(), deriveOutputFileName(inputFileName)).toString());
     }
 
-    private Path getConfigPath() {
-        Path HOME = Paths.get(rootPath);
-        Path configDir = HOME.resolve("etc");
-        if (!Files.exists(configDir)) {
-            try {
-                Files.createDirectories(configDir);
-            } catch (IOException ignore) {
-                // Do Nothing
-            }
+    /** Applies the product-specific naming rules used for signed output files. */
+    private static String deriveOutputFileName(String inputName) {
+        int extensionIndex = inputName.lastIndexOf('.');
+        if (extensionIndex < 0) {
+            return inputName;
         }
-        Path config = configDir.resolve("cfg.properties");
-        File fileConfig = config.toFile();
-        log("-------启动-------:" + fileConfig.getAbsolutePath() + ",是否存在:" + fileConfig.exists());
-        return config;
+
+        String extension = inputName.substring(extensionIndex);
+        String outputName = inputName;
+        if (outputName.startsWith("dx_unsigned")) {
+            outputName = "正式" + outputName.substring("dx_unsigned".length());
+        }
+
+        int protectedMarker = outputName.indexOf("_jiagu");
+        if (protectedMarker >= 0) {
+            outputName = outputName.substring(0, Math.max(0, protectedMarker - 4)) + extension;
+        }
+
+        int unsignedMarker = outputName.indexOf("_unsign");
+        if (unsignedMarker >= 0) {
+            outputName = outputName.substring(0, unsignedMarker) + extension;
+        }
+        return outputName;
     }
 
+    private Path getConfigPath() throws IOException {
+        Path configDirectory = Paths.get(applicationRoot).resolve(CONFIG_DIRECTORY);
+        Files.createDirectories(configDirectory);
+        return configDirectory.resolve(CONFIG_FILE_NAME);
+    }
+
+    /** Immutable snapshot passed from the Swing event thread to the signing worker. */
+    private static final class SigningRequest {
+        private final Path inputPath;
+        private final Path outputPath;
+        private final Path keyStorePath;
+        private final Path channelListPath;
+        private final String inputFileName;
+        private final String keyStorePassword;
+        private final String keyPassword;
+        private final String keyAlias;
+        private final String originalProgressText;
+
+        private SigningRequest(Path inputPath, Path outputPath, Path keyStorePath, Path channelListPath,
+                               String inputFileName, String keyStorePassword, String keyPassword,
+                               String keyAlias, String originalProgressText) {
+            this.inputPath = inputPath;
+            this.outputPath = outputPath;
+            this.keyStorePath = keyStorePath;
+            this.channelListPath = channelListPath;
+            this.inputFileName = inputFileName;
+            this.keyStorePassword = keyStorePassword;
+            this.keyPassword = keyPassword;
+            this.keyAlias = keyAlias;
+            this.originalProgressText = originalProgressText;
+        }
+
+        private boolean hasChannelList() {
+            return channelListPath != null;
+        }
+    }
     {
 // GUI initializer generated by IntelliJ IDEA GUI Designer
 // >>> IMPORTANT!! <<<
@@ -704,7 +779,7 @@ public class UX {
         final JPanel panel2 = new JPanel();
         panel2.setLayout(new GridLayoutManager(4, 4, new Insets(0, 0, 0, 0), -1, -1));
         tabbedPane1.addTab("高级", panel2);
-        keyAliasCB = new JComboBox();
+        keyAliasCB = new JComboBox<>();
         panel2.add(keyAliasCB, new GridConstraints(1, 1, 1, 3, GridConstraints.ANCHOR_WEST, GridConstraints.FILL_HORIZONTAL, GridConstraints.SIZEPOLICY_CAN_GROW, GridConstraints.SIZEPOLICY_FIXED, null, null, null, 0, false));
         final JLabel label7 = new JLabel();
         label7.setText("KeyAlias");
@@ -780,10 +855,9 @@ public class UX {
     private static void updateIconSize(String iconName, int size) {
         try {
             UIManager.put(iconName, createScaledIcon(UIManager.getIcon(iconName), size, size));
-        } catch (Exception e) {
-            e.printStackTrace();
+        } catch (RuntimeException exception) {
+            System.err.println("无法缩放图标 " + iconName + ": " + exception.getMessage());
         }
-
     }
 
     private static Icon createScaledIcon(Icon originalIcon, int width, int height) {
