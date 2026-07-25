@@ -26,3 +26,4 @@ obj/
 signer/bin
 signer/build
 etc/cfg.properties
+/signing-history.json

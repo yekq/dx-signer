@@ -1,6 +1,7 @@
 package dx.signer;
 
 import java.awt.BorderLayout;
+import java.awt.Color;
 import java.awt.Component;
 import java.awt.Dimension;
 import java.awt.FlowLayout;
@@ -17,6 +18,7 @@ import java.util.Collections;
 import java.util.Date;
 import java.util.List;
 import java.util.Locale;
+import java.util.Set;
 
 import javax.swing.BorderFactory;
 import javax.swing.Icon;
@@ -55,28 +57,46 @@ public final class FileChooserDialog extends JDialog {
 
     private final FileSystemView fileSystemView = FileSystemView.getFileSystemView();
     private final FileTableModel tableModel = new FileTableModel(fileSystemView);
-    private final JTable fileTable = new JTable(tableModel);
+    private final JTable fileTable = new JTable(tableModel) {
+        @Override
+        public Component prepareRenderer(TableCellRenderer renderer, int row, int column) {
+            Component component = super.prepareRenderer(renderer, row, column);
+            if (isRowSelected(row)) {
+                component.setForeground(getSelectionForeground());
+                component.setBackground(getSelectionBackground());
+            } else {
+                Color disabledColor = UIManager.getColor("Label.disabledForeground");
+                component.setForeground(isSuccessfullySigned(row)
+                        ? disabledColor == null ? Color.GRAY : disabledColor
+                        : getForeground());
+                component.setBackground(getBackground());
+            }
+            return component;
+        }
+    };
     private final JTextField addressField = new JTextField();
     private final JButton selectButton = new JButton("选择");
     private final List<String> acceptedExtensions;
+    private final Set<String> successfulPathKeys;
 
     private File currentDirectory;
     private File selectedFile;
 
     private FileChooserDialog(Window owner, File initialPath, String filterDescription,
-                              String... acceptedExtensions) {
+                              Set<String> successfulPathKeys, String... acceptedExtensions) {
         super(owner, "选择文件", ModalityType.APPLICATION_MODAL);
         this.acceptedExtensions = normalizeExtensions(acceptedExtensions);
+        this.successfulPathKeys = successfulPathKeys;
         initializeUi(filterDescription);
         navigateToInitialPath(initialPath);
     }
 
     /** Opens the modal selector and returns {@code null} when canceled. */
     public static File chooseFile(Component parent, File initialPath, String filterDescription,
-                                  String... acceptedExtensions) {
+                                  Set<String> successfulPathKeys, String... acceptedExtensions) {
         Window owner = parent == null ? null : SwingUtilities.getWindowAncestor(parent);
         FileChooserDialog dialog = new FileChooserDialog(
-                owner, initialPath, filterDescription, acceptedExtensions);
+                owner, initialPath, filterDescription, successfulPathKeys, acceptedExtensions);
         dialog.setVisible(true);
         return dialog.selectedFile;
     }
@@ -144,7 +164,8 @@ public final class FileChooserDialog extends JDialog {
         fileTable.setAutoResizeMode(JTable.AUTO_RESIZE_OFF);
         fileTable.setFillsViewportHeight(true);
         fileTable.setRowHeight(Math.max(fileTable.getRowHeight(), 28));
-        fileTable.setDefaultRenderer(File.class, new FileNameRenderer(fileSystemView));
+        fileTable.setDefaultRenderer(File.class,
+                new FileNameRenderer(fileSystemView, successfulPathKeys));
         fileTable.setDefaultRenderer(Long.class, new FileSizeRenderer());
         fileTable.setDefaultRenderer(Date.class, new DateRenderer());
 
@@ -245,6 +266,11 @@ public final class FileChooserDialog extends JDialog {
         SwingUtilities.invokeLater(this::fitColumnsToContent);
     }
 
+    private boolean isSuccessfullySigned(int viewRow) {
+        File file = tableModel.getFile(fileTable.convertRowIndexToModel(viewRow));
+        return successfulPathKeys.contains(
+                SigningHistoryStore.normalizePathKey(file.getAbsolutePath()));
+    }
     private boolean accepts(File file) {
         if (acceptedExtensions.isEmpty()) {
             return true;
@@ -399,20 +425,28 @@ public final class FileChooserDialog extends JDialog {
 
     private static final class FileNameRenderer extends DefaultTableCellRenderer {
         private final FileSystemView fileSystemView;
+        private final Set<String> successfulPathKeys;
 
-        private FileNameRenderer(FileSystemView fileSystemView) {
+        private FileNameRenderer(FileSystemView fileSystemView, Set<String> successfulPathKeys) {
             this.fileSystemView = fileSystemView;
+            this.successfulPathKeys = successfulPathKeys;
         }
 
         @Override
-        protected void setValue(Object value) {
+        public Component getTableCellRendererComponent(JTable table, Object value, boolean selected,
+                                                       boolean focused, int row, int column) {
+            super.getTableCellRendererComponent(table, value, selected, focused, row, column);
             File file = (File) value;
             String name = fileSystemView.getSystemDisplayName(file);
             setText(name == null || name.isEmpty() ? file.getName() : name);
             setIcon(fileSystemView.getSystemIcon(file));
+            boolean signedSuccessfully = successfulPathKeys.contains(
+                    SigningHistoryStore.normalizePathKey(file.getAbsolutePath()));
+
+            setToolTipText(signedSuccessfully ? "该文件曾签名成功，仍可继续选择" : null);
+            return this;
         }
     }
-
     private static final class FileSizeRenderer extends DefaultTableCellRenderer {
         private FileSizeRenderer() { setHorizontalAlignment(RIGHT); }
 
