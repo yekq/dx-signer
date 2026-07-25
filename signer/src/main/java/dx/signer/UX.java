@@ -34,11 +34,15 @@ import java.awt.event.WindowFocusListener;
 import java.io.BufferedWriter;
 import java.io.File;
 import java.io.IOException;
+import java.net.URISyntaxException;
 import java.nio.charset.StandardCharsets;
 import java.nio.file.Files;
 import java.nio.file.Path;
 import java.nio.file.Paths;
 import java.security.KeyStore;
+import java.time.Instant;
+import java.time.ZoneId;
+import java.time.format.DateTimeFormatter;
 import java.util.Arrays;
 import java.util.Collections;
 import java.util.Enumeration;
@@ -47,6 +51,7 @@ import java.util.Set;
 import java.util.concurrent.ExecutorService;
 import java.util.concurrent.Executors;
 
+import javax.swing.BorderFactory;
 import javax.swing.Icon;
 import javax.swing.ImageIcon;
 import javax.swing.JButton;
@@ -84,6 +89,9 @@ public final class UX {
     private static final String CONFIG_CHANNEL_LIST = "channel-list";
     private static final String CONFIG_KEY_STORE_PASSWORD = "ks-pass";
     private static final String CONFIG_KEY_PASSWORD = "key-pass";
+    private static final String HISTORY_FILE_NAME = "signing-history.json";
+    private static final DateTimeFormatter HISTORY_TIME_FORMAT =
+            DateTimeFormatter.ofPattern("yyyy-MM-dd HH:mm:ss").withZone(ZoneId.systemDefault());
     private static String applicationRoot = "";
     private final ExecutorService signingExecutor = Executors.newSingleThreadExecutor();
     // These fields are bound by UX.form; binding names must remain synchronized.
@@ -95,6 +103,7 @@ public final class UX {
     private JTextField outPathTF;
     private JButton signBtn;
     private JTextArea loggingTA;
+    private JTextArea historyTA;
     private JCheckBox savePwCheckBox;
     private JComboBox<String> keyAliasCB;
     private JPasswordField keyPassPF;
@@ -108,6 +117,7 @@ public final class UX {
 
     private boolean readOnly = false;
     private String inputFileName = "";
+    private SigningHistoryStore signingHistoryStore;
 
     private static int mainWindowWidth;
     private static int mainWindowHeight;
@@ -170,9 +180,11 @@ public final class UX {
 
     public UX() {
         configureKeyAliasSelector();
+        initializeSigningHistory();
         loadLocalConfig();
         configureActions();
         configureLogging();
+        refreshHistoryText();
         applyReadOnlyState();
     }
 
@@ -264,7 +276,11 @@ public final class UX {
                             String... extensions) {
         String path = pathField.getText().trim();
         File initialPath = path.isEmpty() ? null : new File(path);
-        return FileChooserDialog.chooseFile(parent, initialPath, description, extensions);
+        Set<String> successfulPaths = signingHistoryStore == null
+                ? Collections.emptySet()
+                : signingHistoryStore.successfulPathKeys();
+        return FileChooserDialog.chooseFile(
+                parent, initialPath, description, successfulPaths, extensions);
     }
 
     private void showChooseAppFileDialog() {
@@ -400,9 +416,11 @@ public final class UX {
                         request.keyPassword);
             }
 
+            recordSigningResult(request.inputPath, result == 0);
             Path completedOutputPath = actualOutputPath;
             SwingUtilities.invokeLater(() -> showSigningResult(request, completedOutputPath, result));
         } catch (Exception exception) {
+            recordSigningResult(request.inputPath, false);
             log("签名失败: " + exception.getMessage());
             SwingUtilities.invokeLater(() -> JOptionPane.showMessageDialog(
                     topPanel, "签名失败: " + exception.getMessage(), "签名结果", JOptionPane.ERROR_MESSAGE));
@@ -439,6 +457,41 @@ public final class UX {
         progressBar1.setIndeterminate(signing);
         progressBar1.setString(signing ? "签名中..." : idleText);
         progressBar1.setStringPainted(true);
+    }
+    private void initializeSigningHistory() {
+        try {
+            signingHistoryStore = new SigningHistoryStore(
+                    getHistoryPath());
+        } catch (IOException | RuntimeException exception) {
+            log("读取签名历史失败: " + exception.getMessage());
+        }
+    }
+
+    private void recordSigningResult(Path inputPath, boolean successful) {
+        if (signingHistoryStore == null) {
+            return;
+        }
+        try {
+            signingHistoryStore.add(inputPath, successful);
+            SwingUtilities.invokeLater(this::refreshHistoryText);
+        } catch (IOException | RuntimeException exception) {
+            log("保存签名历史失败: " + exception.getMessage());
+        }
+    }
+
+    private void refreshHistoryText() {
+        if (historyTA == null || signingHistoryStore == null) {
+            return;
+        }
+        StringBuilder history = new StringBuilder("文件名\t时间\t状态");
+        for (SigningHistoryStore.Record record : signingHistoryStore.records()) {
+            history.append(System.lineSeparator())
+                    .append(record.fileName()).append('\t')
+                    .append(HISTORY_TIME_FORMAT.format(Instant.ofEpochMilli(record.timestamp()))).append('\t')
+                    .append(record.successful() ? "成功" : "失败");
+        }
+        historyTA.setText(history.toString());
+        historyTA.setCaretPosition(0);
     }
     private void log(String message) {
         if (loggingTA == null) {
@@ -526,12 +579,38 @@ public final class UX {
         return outputName;
     }
 
-    private Path getConfigPath() throws IOException {
+    private Path getConfigDirectory() throws IOException {
         Path configDirectory = Paths.get(applicationRoot).resolve(CONFIG_DIRECTORY);
         Files.createDirectories(configDirectory);
-        return configDirectory.resolve(CONFIG_FILE_NAME);
+        return configDirectory;
     }
 
+    private Path getConfigPath() throws IOException {
+        return getConfigDirectory().resolve(CONFIG_FILE_NAME);
+    }
+
+    /** Resolves the history file beside the running JAR, with an IDE-friendly fallback. */
+    private Path getHistoryPath() {
+        try {
+            if (UX.class.getProtectionDomain().getCodeSource() != null) {
+                Path codeLocation = Paths.get(
+                        UX.class.getProtectionDomain().getCodeSource().getLocation().toURI());
+                if (Files.isRegularFile(codeLocation) && codeLocation.getParent() != null) {
+                    return codeLocation.getParent().resolve(HISTORY_FILE_NAME);
+                }
+            }
+        } catch (URISyntaxException | RuntimeException exception) {
+            log("无法定位运行中的 JAR，将使用应用目录保存历史: " + exception.getMessage());
+        }
+
+        Path fallbackDirectory = applicationRoot.isEmpty()
+                ? Paths.get("").toAbsolutePath()
+                : Paths.get(applicationRoot).toAbsolutePath();
+        if (Files.isRegularFile(fallbackDirectory) && fallbackDirectory.getParent() != null) {
+            fallbackDirectory = fallbackDirectory.getParent();
+        }
+        return fallbackDirectory.normalize().resolve(HISTORY_FILE_NAME);
+    }
     /** Immutable snapshot passed from the Swing event thread to the signing worker. */
     private static final class SigningRequest {
         private final Path inputPath;
@@ -578,7 +657,7 @@ public final class UX {
      */
     private void $$$setupUI$$$() {
         topPanel = new JPanel();
-        topPanel.setLayout(new GridLayoutManager(3, 1, new Insets(5, 5, 5, 5), -1, -1));
+        topPanel.setLayout(new GridLayoutManager(4, 1, new Insets(5, 5, 5, 5), -1, -1));
         tabbedPane1 = new JTabbedPane();
         topPanel.add(tabbedPane1, new GridConstraints(0, 0, 1, 1, GridConstraints.ANCHOR_CENTER, GridConstraints.FILL_BOTH, GridConstraints.SIZEPOLICY_CAN_SHRINK | GridConstraints.SIZEPOLICY_CAN_GROW, GridConstraints.SIZEPOLICY_CAN_SHRINK | GridConstraints.SIZEPOLICY_CAN_GROW, null, new Dimension(200, 200), null, 0, false));
         final JPanel panel1 = new JPanel();
@@ -665,6 +744,7 @@ public final class UX {
         panel3.add(progressBar1, new GridConstraints(0, 0, 1, 1, GridConstraints.ANCHOR_CENTER, GridConstraints.FILL_HORIZONTAL, GridConstraints.SIZEPOLICY_WANT_GROW, GridConstraints.SIZEPOLICY_FIXED, null, null, null, 0, false));
         final JScrollPane scrollPane1 = new JScrollPane();
         topPanel.add(scrollPane1, new GridConstraints(2, 0, 1, 1, GridConstraints.ANCHOR_CENTER, GridConstraints.FILL_BOTH, GridConstraints.SIZEPOLICY_CAN_SHRINK | GridConstraints.SIZEPOLICY_WANT_GROW, GridConstraints.SIZEPOLICY_CAN_SHRINK | GridConstraints.SIZEPOLICY_WANT_GROW, null, null, null, 0, false));
+        scrollPane1.setBorder(BorderFactory.createTitledBorder("运行日志"));
         loggingTA = new JTextArea();
         loggingTA.setDoubleBuffered(true);
         loggingTA.setEditable(true);
@@ -672,6 +752,13 @@ public final class UX {
         loggingTA.setLineWrap(true);
         loggingTA.setText("   点击“4.签名”按钮开始签名...");
         scrollPane1.setViewportView(loggingTA);
+        final JScrollPane scrollPane2 = new JScrollPane();
+        topPanel.add(scrollPane2, new GridConstraints(3, 0, 1, 1, GridConstraints.ANCHOR_CENTER, GridConstraints.FILL_BOTH, GridConstraints.SIZEPOLICY_CAN_SHRINK | GridConstraints.SIZEPOLICY_WANT_GROW, GridConstraints.SIZEPOLICY_CAN_SHRINK | GridConstraints.SIZEPOLICY_WANT_GROW, null, new Dimension(200, 120), null, 0, false));
+        scrollPane2.setBorder(BorderFactory.createTitledBorder("签名历史"));
+        historyTA = new JTextArea();
+        historyTA.setEditable(false);
+        historyTA.setLineWrap(false);
+        scrollPane2.setViewportView(historyTA);
         label1.setLabelFor(inPathTF);
         label2.setLabelFor(ksPathTF);
         label3.setLabelFor(ksPassPF);
