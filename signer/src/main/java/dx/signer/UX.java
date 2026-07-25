@@ -26,7 +26,6 @@ import java.awt.Component;
 import java.awt.Container;
 import java.awt.Dimension;
 import java.awt.Font;
-import java.awt.HeadlessException;
 import java.awt.Image;
 import java.awt.Insets;
 import java.awt.Toolkit;
@@ -35,8 +34,6 @@ import java.awt.event.WindowFocusListener;
 import java.io.BufferedWriter;
 import java.io.File;
 import java.io.IOException;
-import java.lang.reflect.Field;
-import java.lang.reflect.Method;
 import java.nio.charset.StandardCharsets;
 import java.nio.file.Files;
 import java.nio.file.Path;
@@ -44,9 +41,7 @@ import java.nio.file.Paths;
 import java.security.KeyStore;
 import java.util.Arrays;
 import java.util.Collections;
-import java.util.Date;
 import java.util.Enumeration;
-import java.util.Locale;
 import java.util.Properties;
 import java.util.Set;
 import java.util.concurrent.ExecutorService;
@@ -58,8 +53,6 @@ import javax.swing.JButton;
 import javax.swing.JCheckBox;
 import javax.swing.JComboBox;
 import javax.swing.JComponent;
-import javax.swing.JDialog;
-import javax.swing.JFileChooser;
 import javax.swing.JFrame;
 import javax.swing.JLabel;
 import javax.swing.JOptionPane;
@@ -68,23 +61,14 @@ import javax.swing.JPasswordField;
 import javax.swing.JProgressBar;
 import javax.swing.JScrollPane;
 import javax.swing.JTabbedPane;
-import javax.swing.JTable;
 import javax.swing.JTextArea;
 import javax.swing.JTextField;
-import javax.swing.LookAndFeel;
-import javax.swing.RowSorter;
-import javax.swing.SortOrder;
 import javax.swing.SwingUtilities;
 import javax.swing.UIManager;
-import javax.swing.UnsupportedLookAndFeelException;
 import javax.swing.event.PopupMenuEvent;
 import javax.swing.event.PopupMenuListener;
-import javax.swing.filechooser.FileFilter;
-import javax.swing.plaf.FileChooserUI;
 import javax.swing.plaf.FontUIResource;
-import javax.swing.table.TableRowSorter;
 import javax.swing.text.DefaultCaret;
-import javax.swing.text.JTextComponent;
 
 import dx.channel.ApkSigns;
 
@@ -100,9 +84,6 @@ public final class UX {
     private static final String CONFIG_CHANNEL_LIST = "channel-list";
     private static final String CONFIG_KEY_STORE_PASSWORD = "ks-pass";
     private static final String CONFIG_KEY_PASSWORD = "key-pass";
-    private static final String FILE_CHOOSER_SORT_LISTENER_INSTALLED =
-            "dx.signer.fileChooserSortListenerInstalled";
-    private static final int DETAILS_VIEW = 1;
     private static String applicationRoot = "";
     private final ExecutorService signingExecutor = Executors.newSingleThreadExecutor();
     // These fields are bound by UX.form; binding names must remain synchronized.
@@ -187,106 +168,6 @@ public final class UX {
         frame.setVisible(true);
     }
 
-    /** Creates a chooser that uses the native system appearance and a large details view. */
-    public static JFileChooser windowsJFileChooser() {
-        Dimension screenSize = Toolkit.getDefaultToolkit().getScreenSize();
-        int baseWidth = mainWindowWidth > 0 ? mainWindowWidth : screenSize.width * 9 / 10;
-        int baseHeight = mainWindowHeight > 0 ? mainWindowHeight : screenSize.height * 9 / 10;
-        int dialogWidth = baseWidth * 3 / 4;
-        int dialogHeight = baseHeight * 3 / 4;
-
-        LookAndFeel previousLookAndFeel = UIManager.getLookAndFeel();
-        JFileChooser chooser;
-        try {
-            UIManager.setLookAndFeel(UIManager.getSystemLookAndFeelClassName());
-            chooser = new JFileChooser() {
-                @Override
-                protected JDialog createDialog(Component parent) throws HeadlessException {
-                    JDialog dialog = super.createDialog(parent);
-                    dialog.setLocationRelativeTo(parent);
-                    configureFileChooserDetailsView(this);
-                    return dialog;
-                }
-            };
-        } catch (ReflectiveOperationException | UnsupportedLookAndFeelException exception) {
-            System.err.println("无法启用系统文件选择器外观: " + exception.getMessage());
-            chooser = new JFileChooser();
-        } finally {
-            try {
-                UIManager.setLookAndFeel(previousLookAndFeel);
-            } catch (UnsupportedLookAndFeelException exception) {
-                System.err.println("无法恢复界面外观: " + exception.getMessage());
-            }
-        }
-
-        configureFileChooserDetailsView(chooser);
-        chooser.setFileSelectionMode(JFileChooser.FILES_ONLY);
-        chooser.setPreferredSize(new Dimension(dialogWidth, dialogHeight));
-        chooser.setControlButtonsAreShown(true);
-        chooser.setMultiSelectionEnabled(false);
-        return chooser;
-    }
-
-    /**
-     * Keeps details view sorted by modification time after the chooser changes directories.
-     * The Windows chooser exposes this behavior only through its internal file pane API.
-     */
-    private static void configureFileChooserDetailsView(JFileChooser fileChooser) {
-        applyModifiedTimeSort(fileChooser);
-        if (fileChooser.getClientProperty(FILE_CHOOSER_SORT_LISTENER_INSTALLED) != null) {
-            return;
-        }
-
-        fileChooser.putClientProperty(FILE_CHOOSER_SORT_LISTENER_INSTALLED, Boolean.TRUE);
-        fileChooser.addPropertyChangeListener(JFileChooser.DIRECTORY_CHANGED_PROPERTY,
-                event -> applyModifiedTimeSort(fileChooser));
-    }
-    private static void applyModifiedTimeSort(JFileChooser fileChooser) {
-        SwingUtilities.invokeLater(() -> {
-            try {
-                FileChooserUI chooserUI = fileChooser.getUI();
-                Field filePaneField = chooserUI.getClass().getDeclaredField("filePane");
-                filePaneField.setAccessible(true);
-                Object filePane = filePaneField.get(chooserUI);
-
-                Method setViewType = filePane.getClass().getDeclaredMethod("setViewType", int.class);
-                setViewType.setAccessible(true);
-                setViewType.invoke(filePane, DETAILS_VIEW);
-
-                Field detailsTableField = filePane.getClass().getDeclaredField("detailsTable");
-                detailsTableField.setAccessible(true);
-                JTable detailsTable = (JTable) detailsTableField.get(filePane);
-                if (!(detailsTable.getRowSorter() instanceof TableRowSorter)) {
-                    return;
-                }
-
-                int modifiedTimeColumn = -1;
-                for (int modelColumn = 0; modelColumn < detailsTable.getModel().getColumnCount(); modelColumn++) {
-                    if (Date.class.isAssignableFrom(detailsTable.getModel().getColumnClass(modelColumn))) {
-                        modifiedTimeColumn = modelColumn;
-                        break;
-                    }
-                }
-                if (modifiedTimeColumn < 0) {
-                    return;
-                }
-
-                TableRowSorter<?> rowSorter = (TableRowSorter<?>) detailsTable.getRowSorter();
-                rowSorter.setSortable(modifiedTimeColumn, true);
-                rowSorter.setSortKeys(Collections.singletonList(
-                        new RowSorter.SortKey(modifiedTimeColumn, SortOrder.DESCENDING)));
-                rowSorter.sort();
-
-                int viewColumn = detailsTable.convertColumnIndexToView(modifiedTimeColumn);
-                if (viewColumn >= 0) {
-                    detailsTable.getColumnModel().getColumn(viewColumn)
-                            .setPreferredWidth(mainWindowWidth * 2 / 15);
-                }
-            } catch (ReflectiveOperationException | RuntimeException exception) {
-                System.err.println("无法设置文件列表排序: " + exception.getMessage());
-            }
-        });
-    }
     public UX() {
         configureKeyAliasSelector();
         loadLocalConfig();
@@ -379,64 +260,34 @@ public final class UX {
         }
     }
 
-    private JFileChooser createFileChooser(JTextComponent pathField, FileFilter filter) {
-        JFileChooser fileChooser = windowsJFileChooser();
-        fileChooser.setFileFilter(filter);
-
-        String currentPath = pathField.getText().trim();
-        if (!currentPath.isEmpty()) {
-            File currentFile = new File(currentPath);
-            fileChooser.setCurrentDirectory(currentFile.isDirectory() ? currentFile : currentFile.getParentFile());
-        }
-        return fileChooser;
-    }
-
-    private static FileFilter createExtensionFilter(String description, String... extensions) {
-        return new FileFilter() {
-            @Override
-            public boolean accept(File file) {
-                if (file.isDirectory()) {
-                    return true;
-                }
-                String lowerCaseName = file.getName().toLowerCase(Locale.ROOT);
-                for (String extension : extensions) {
-                    if (lowerCaseName.endsWith(extension)) {
-                        return true;
-                    }
-                }
-                return false;
-            }
-
-            @Override
-            public String getDescription() {
-                return description;
-            }
-        };
+    private File chooseFile(Component parent, JTextField pathField, String description,
+                            String... extensions) {
+        String path = pathField.getText().trim();
+        File initialPath = path.isEmpty() ? null : new File(path);
+        return FileChooserDialog.chooseFile(parent, initialPath, description, extensions);
     }
 
     private void showChooseAppFileDialog() {
-        JFileChooser fileChooser = createFileChooser(inPathTF,
-                createExtensionFilter("*.apk, *.aab", ".apk", ".aab"));
-        if (fileChooser.showOpenDialog(inBtn) == JFileChooser.APPROVE_OPTION) {
-            setInput(fileChooser.getSelectedFile());
+        File selected = chooseFile(inBtn, inPathTF, "*.apk, *.aab", ".apk", ".aab");
+        if (selected != null) {
+            setInput(selected);
             onSubmitClick();
         }
     }
 
     private void showKeystoreFileDialog() {
-        JFileChooser fileChooser = createFileChooser(ksPathTF,
-                createExtensionFilter("*.ks, *.keystore, *.p12, *.pfx, *.jks",
-                        ".ks", ".keystore", ".p12", ".pfx", ".jks"));
-        if (fileChooser.showOpenDialog(ksBtn) == JFileChooser.APPROVE_OPTION) {
-            ksPathTF.setText(fileChooser.getSelectedFile().getAbsolutePath());
+        File selected = chooseFile(ksBtn, ksPathTF,
+                "*.ks, *.keystore, *.p12, *.pfx, *.jks",
+                ".ks", ".keystore", ".p12", ".pfx", ".jks");
+        if (selected != null) {
+            ksPathTF.setText(selected.getAbsolutePath());
         }
     }
 
     private void showChannelFileDialog() {
-        JFileChooser fileChooser = createFileChooser(channelPathTF,
-                createExtensionFilter("*.txt", ".txt"));
-        if (fileChooser.showOpenDialog(channelBtn) == JFileChooser.APPROVE_OPTION) {
-            channelPathTF.setText(fileChooser.getSelectedFile().getAbsolutePath());
+        File selected = chooseFile(channelBtn, channelPathTF, "*.txt", ".txt");
+        if (selected != null) {
+            channelPathTF.setText(selected.getAbsolutePath());
         }
     }
     private void onSubmitClick() {
