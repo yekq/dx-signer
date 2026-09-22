@@ -11,19 +11,25 @@ import java.util.Properties;
  */
 public class SignerConfigBean {
     private boolean readOnly;
-    private String in;//=D:\\Signer\\output\\
-    private String ksPass;//=xx;//
-    private String out;//=D:\\Signer\\output\\xxxxx.apk
-    private String inFilename;//=
-    private String ksKeyAlias;//={{auto}}
-    private String channelList;//=
-    private String keyPass;//=
-    private String ks;//=D\:\\Android\\keystore\\test.jks
+    private String projectName = "";
+    private String applicationPackageName = "";
+    private String in = "";
+    private String ksPass = "";
+    private String out = "";
+    private String inFilename = "";
+    private String ksKeyAlias = "{{auto}}";
+    private String channelList = "";
+    private String keyPass = "";
+    private String ks = "";
+    private final Properties additionalProperties = new Properties();
 
     public SignerConfigBean() {
     }
 
     public SignerConfigBean(Properties initConfig) {
+        additionalProperties.putAll(initConfig);
+        setProjectName(initConfig.getProperty("projectName", ""));
+        setApplicationPackageName(initConfig.getProperty("applicationPackageName", ""));
         boolean readOnly = "true".equals(initConfig.getProperty("config-read-only", ""));
         String ks = initConfig.getProperty("ks", "");
         String inPath = initConfig.getProperty("in", "");
@@ -43,6 +49,40 @@ public class SignerConfigBean {
         setChannelList(channelList);
         setKeyPass(keyP);
         setOut(outPath);
+    }
+
+    /** 转换为命令行兼容字段，同时保留未被界面使用的配置项。 */
+    public Properties toProperties() {
+        Properties properties = new Properties();
+        properties.putAll(additionalProperties);
+        properties.setProperty("projectName", projectName);
+        properties.setProperty("applicationPackageName", applicationPackageName);
+        properties.setProperty("config-read-only", Boolean.toString(readOnly));
+        properties.setProperty("in", in);
+        properties.setProperty("out", out);
+        properties.setProperty("in-filename", inFilename);
+        properties.setProperty("ks", ks);
+        properties.setProperty("ks-pass", ksPass);
+        properties.setProperty("key-pass", keyPass);
+        properties.setProperty("ks-key-alias", ksKeyAlias);
+        properties.setProperty("channel-list", channelList);
+        return properties;
+    }
+
+    public String getProjectName() {
+        return projectName;
+    }
+
+    public void setProjectName(String projectName) {
+        this.projectName = projectName == null ? "" : projectName.trim();
+    }
+
+    public String getApplicationPackageName() {
+        return applicationPackageName;
+    }
+
+    public void setApplicationPackageName(String applicationPackageName) {
+        this.applicationPackageName = applicationPackageName == null ? "" : applicationPackageName.trim();
     }
 
     public boolean isReadOnly() {

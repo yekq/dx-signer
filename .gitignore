@@ -27,3 +27,5 @@ signer/bin
 signer/build
 etc/cfg.properties
 /signing-history.json
+/cfg.properties
+/window-state.json

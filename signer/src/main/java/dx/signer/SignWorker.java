@@ -39,6 +39,11 @@ public class SignWorker {
     }
 
     public static int signApk(Path apkUnsigned, Path apkOut, Path ksPath, String ksPass, String keyAlias, String keyPass) {
+        return signApk(apkUnsigned, apkOut, ksPath, ksPass, keyAlias, keyPass, "");
+    }
+
+    public static int signApk(Path apkUnsigned, Path apkOut, Path ksPath, String ksPass,
+                              String keyAlias, String keyPass, String applicationPackageName) {
         Path tmp = null;
         String suffix = apkUnsigned.getFileName().toString().endsWith("aab") ? "aab" : "apk";
         try {
@@ -59,7 +64,7 @@ public class SignWorker {
             ApkSigns.zipAlign(apkUnsigned, tmp, false);
             log.info("{}", "<< 完成");
 
-            log.info("{}", ">> 签名 ...");
+            logSigningConfiguration(ksPath, applicationPackageName);
             sign(tmp, ksPath, ksPass, keyAlias, keyPass, apkOut);
             log.info("{}", "<< 完成");
 
@@ -85,6 +90,13 @@ public class SignWorker {
                                      String ksPass,
                                      String keyAlias,
                                      String keyPass) throws IOException {
+        return signChannelApk(input, inputFileName, outDir, channelListFile,
+                ksPath, ksPass, keyAlias, keyPass, "");
+    }
+
+    public static int signChannelApk(Path input, String inputFileName, Path outDir,
+                                     Path channelListFile, Path ksPath, String ksPass,
+                                     String keyAlias, String keyPass, String applicationPackageName) throws IOException {
 
         if (inputFileName == null || inputFileName.trim().length() == 0) {
             inputFileName = input.getFileName().toString();
@@ -96,6 +108,7 @@ public class SignWorker {
         List<String> channelList = ChannelBuilder.readChannelList(channelListFile);
         log.info("读取到{}个渠道", channelList.size());
 
+        logSigningConfiguration(ksPath, applicationPackageName);
         KeyStore.PrivateKeyEntry key = ApkSigns.loadKey(ksPath, ksPass, keyAlias, keyPass);
         try (ChannelBuilder cb = new ChannelBuilder(input, key)) {
             log.info("已加载模板: {}", input);
@@ -125,4 +138,10 @@ public class SignWorker {
         return 0;
     }
 
+    /** 仅展示证书文件名和配置包名，不输出证书路径及密码。 */
+    private static void logSigningConfiguration(Path ksPath, String applicationPackageName) {
+        String packageName = applicationPackageName == null ? "" : applicationPackageName.trim();
+        log.info(">> 签名 ...  {}{}", ksPath.getFileName(),
+                packageName.isEmpty() ? "" : " " + packageName);
+    }
 }
