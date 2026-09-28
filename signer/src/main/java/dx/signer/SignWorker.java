@@ -28,6 +28,7 @@ import java.nio.file.Files;
 import java.nio.file.Path;
 import java.security.KeyStore;
 import java.util.List;
+import java.util.function.Consumer;
 import java.util.zip.DataFormatException;
 
 public class SignWorker {
@@ -97,6 +98,20 @@ public class SignWorker {
     public static int signChannelApk(Path input, String inputFileName, Path outDir,
                                      Path channelListFile, Path ksPath, String ksPass,
                                      String keyAlias, String keyPass, String applicationPackageName) throws IOException {
+        return signChannelApk(input, inputFileName, outDir, channelListFile,
+                ksPath, ksPass, keyAlias, keyPass, applicationPackageName, null);
+    }
+
+    /**
+     * 每个渠道 APK 成功生成后，在当前签名线程回调实际输出路径。
+     * 后续渠道失败时，之前已经成功生成的 APK 仍会保留对应的回调记录。
+     *
+     * @param onGenerated 可选的成功输出回调，传入 null 表示无需通知
+     */
+    public static int signChannelApk(Path input, String inputFileName, Path outDir,
+                                     Path channelListFile, Path ksPath, String ksPass,
+                                     String keyAlias, String keyPass, String applicationPackageName,
+                                     Consumer<Path> onGenerated) throws IOException {
 
         if (inputFileName == null || inputFileName.trim().length() == 0) {
             inputFileName = input.getFileName().toString();
@@ -126,6 +141,9 @@ public class SignWorker {
                 log.info("正在输出渠道: {}", channel);
                 try {
                     cb.build(channel, outPath);
+                    if (onGenerated != null) {
+                        onGenerated.accept(outPath);
+                    }
                     log.info("已经生成: {}", outPath);
                 }catch (Throwable e) {
                     log.error("多渠道失败", e);

@@ -11,6 +11,9 @@ import java.awt.event.KeyEvent;
 import java.awt.event.MouseAdapter;
 import java.awt.event.MouseEvent;
 import java.io.File;
+import java.io.IOException;
+import java.nio.file.Files;
+import java.nio.file.attribute.BasicFileAttributes;
 import java.text.DateFormat;
 import java.util.ArrayList;
 import java.util.Arrays;
@@ -23,6 +26,7 @@ import java.util.Set;
 import javax.swing.BorderFactory;
 import javax.swing.Icon;
 import javax.swing.JButton;
+import javax.swing.JCheckBox;
 import javax.swing.JDialog;
 import javax.swing.JLabel;
 import javax.swing.JOptionPane;
@@ -45,8 +49,10 @@ import javax.swing.table.TableColumn;
 import javax.swing.table.TableRowSorter;
 
 /**
- * File selector backed only by public Swing and {@link FileSystemView} APIs.
- * The address field accepts pasted directory or file paths and navigates on Enter.
+ * create by yekangqi
+ * <hr>
+ * time: 2026/09/28 18:43
+ * description: 使用公开的 Swing 和 {@link FileSystemView} API 选择文件，支持路径粘贴和 APK 签名历史筛选。
  */
 public final class FileChooserDialog extends JDialog {
     private static final int NAME_COLUMN = 0;
@@ -66,37 +72,49 @@ public final class FileChooserDialog extends JDialog {
                 component.setBackground(getSelectionBackground());
             } else {
                 Color disabledColor = UIManager.getColor("Label.disabledForeground");
-                component.setForeground(isSuccessfullySigned(row)
+                component.setForeground(isInSigningHistory(row)
                         ? disabledColor == null ? Color.GRAY : disabledColor
                         : getForeground());
-                component.setBackground(getBackground());
+                Color accent = UIManager.getColor("Signer.accent");
+                boolean recent = isRecentUnencryptedApk(row);
+                component.setBackground(recent
+                        ? blend(getBackground(), accent == null ? new Color(240, 176, 43) : accent)
+                        : getBackground());
+                if (convertColumnIndexToModel(column) == NAME_COLUMN && recent
+                        && component instanceof JLabel) {
+                    ((JLabel) component).setToolTipText("该目录最近新增的未加固 APK");
+                }
             }
             return component;
         }
     };
     private final JTextField addressField = new JTextField();
+    private final JCheckBox hideHistoryApksCheckBox = new JCheckBox("隐藏签名历史中的 APK", true);
     private final JButton selectButton = new JButton("选择");
     private final List<String> acceptedExtensions;
-    private final Set<String> successfulPathKeys;
+    private final Set<String> historyPathKeys;
+    private final boolean choosingApk;
 
     private File currentDirectory;
     private File selectedFile;
+    private File recentUnencryptedApk;
 
     private FileChooserDialog(Window owner, File initialPath, String filterDescription,
-                              Set<String> successfulPathKeys, String... acceptedExtensions) {
+                              Set<String> historyPathKeys, String... acceptedExtensions) {
         super(owner, "选择文件", ModalityType.APPLICATION_MODAL);
         this.acceptedExtensions = normalizeExtensions(acceptedExtensions);
-        this.successfulPathKeys = successfulPathKeys;
+        this.historyPathKeys = historyPathKeys;
+        this.choosingApk = this.acceptedExtensions.contains(".apk");
         initializeUi(filterDescription);
         navigateToInitialPath(initialPath);
     }
 
-    /** Opens the modal selector and returns {@code null} when canceled. */
+    /** 打开文件选择器；取消时返回 {@code null}。 */
     public static File chooseFile(Component parent, File initialPath, String filterDescription,
-                                  Set<String> successfulPathKeys, String... acceptedExtensions) {
+                                  Set<String> historyPathKeys, String... acceptedExtensions) {
         Window owner = parent == null ? null : SwingUtilities.getWindowAncestor(parent);
         FileChooserDialog dialog = new FileChooserDialog(
-                owner, initialPath, filterDescription, successfulPathKeys, acceptedExtensions);
+                owner, initialPath, filterDescription, historyPathKeys, acceptedExtensions);
         dialog.setVisible(true);
         return dialog.selectedFile;
     }
@@ -105,7 +123,13 @@ public final class FileChooserDialog extends JDialog {
         setDefaultCloseOperation(DISPOSE_ON_CLOSE);
         setLayout(new BorderLayout(8, 8));
         ((JPanel) getContentPane()).setBorder(BorderFactory.createEmptyBorder(10, 10, 10, 10));
-        add(createAddressBar(), BorderLayout.NORTH);
+        JPanel header = new JPanel(new BorderLayout(0, 8));
+        header.add(createAddressBar(), BorderLayout.NORTH);
+        if (choosingApk) {
+            hideHistoryApksCheckBox.addActionListener(event -> refreshDirectory());
+            header.add(hideHistoryApksCheckBox, BorderLayout.SOUTH);
+        }
+        add(header, BorderLayout.NORTH);
         configureTable();
         add(new JScrollPane(fileTable), BorderLayout.CENTER);
         add(createFooter(filterDescription), BorderLayout.SOUTH);
@@ -165,7 +189,7 @@ public final class FileChooserDialog extends JDialog {
         fileTable.setFillsViewportHeight(true);
         fileTable.setRowHeight(Math.max(fileTable.getRowHeight(), 28));
         fileTable.setDefaultRenderer(File.class,
-                new FileNameRenderer(fileSystemView, successfulPathKeys));
+                new FileNameRenderer(fileSystemView, historyPathKeys));
         fileTable.setDefaultRenderer(Long.class, new FileSizeRenderer());
         fileTable.setDefaultRenderer(Date.class, new DateRenderer());
 
@@ -222,9 +246,11 @@ public final class FileChooserDialog extends JDialog {
             showPathError("路径不存在: " + rawPath);
         } else if (target.isDirectory()) {
             loadDirectory(target);
-        } else if (accepts(target)) {
+        } else if (accepts(target) && !shouldHideHistoryApk(target)) {
             loadDirectory(target.getParentFile());
             selectFile(target);
+        } else if (shouldHideHistoryApk(target)) {
+            showPathError("该 APK 已在签名历史中，请取消勾选隐藏选项后选择");
         } else {
             showPathError("文件类型不符合当前过滤条件");
         }
@@ -254,10 +280,13 @@ public final class FileChooserDialog extends JDialog {
         File[] files = fileSystemView.getFiles(directory, true);
         List<File> visibleFiles = new ArrayList<>();
         for (File file : files) {
-            if (file.isDirectory() || accepts(file)) {
+            if (file.isDirectory() || (accepts(file) && !shouldHideHistoryApk(file))) {
                 visibleFiles.add(file);
             }
         }
+        recentUnencryptedApk = choosingApk
+                ? findRecentUnencryptedApk(visibleFiles, historyPathKeys)
+                : null;
         currentDirectory = directory;
         selectedFile = null;
         selectButton.setEnabled(false);
@@ -266,11 +295,80 @@ public final class FileChooserDialog extends JDialog {
         SwingUtilities.invokeLater(this::fitColumnsToContent);
     }
 
-    private boolean isSuccessfullySigned(int viewRow) {
+    private boolean isInSigningHistory(int viewRow) {
         File file = tableModel.getFile(fileTable.convertRowIndexToModel(viewRow));
-        return successfulPathKeys.contains(
+        return historyPathKeys.contains(
                 SigningHistoryStore.normalizePathKey(file.getAbsolutePath()));
     }
+
+    private boolean isRecentUnencryptedApk(int viewRow) {
+        return recentUnencryptedApk != null && recentUnencryptedApk.equals(
+                tableModel.getFile(fileTable.convertRowIndexToModel(viewRow)));
+    }
+
+    private boolean shouldHideHistoryApk(File file) {
+        return choosingApk && hideHistoryApksCheckBox.isSelected()
+                && isInSigningHistoryApk(file, historyPathKeys);
+    }
+
+    static boolean isInSigningHistoryApk(File file, Set<String> historyPathKeys) {
+        return file.isFile() && file.getName().toLowerCase(Locale.ROOT).endsWith(".apk")
+                && historyPathKeys.contains(
+                        SigningHistoryStore.normalizePathKey(file.getAbsolutePath()));
+    }
+
+    static boolean isUnencryptedApk(File file) {
+        if (!file.isFile()) {
+            return false;
+        }
+        String name = file.getName().toLowerCase(Locale.ROOT);
+        if (!name.endsWith(".apk")) {
+            return false;
+        }
+        String stem = name.substring(0, name.length() - 4);
+        return !stem.startsWith("dx_unsigned")
+                && !stem.endsWith("_360")
+                && !stem.contains("_jiagu")
+                && !stem.contains("_unsign")
+                && !stem.contains("_protected");
+    }
+
+    static File findRecentUnencryptedApk(List<File> files, Set<String> historyPathKeys) {
+        File newest = null;
+        long newestTime = Long.MIN_VALUE;
+        for (File file : files) {
+            if (!isUnencryptedApk(file) || isInSigningHistoryApk(file, historyPathKeys)) {
+                continue;
+            }
+            long createdAt = creationTime(file);
+            if (createdAt > newestTime) {
+                newest = file;
+                newestTime = createdAt;
+            }
+        }
+        return newest;
+    }
+
+    private static long creationTime(File file) {
+        try {
+            long createdAt = Files.readAttributes(file.toPath(), BasicFileAttributes.class)
+                    .creationTime().toMillis();
+            if (createdAt > 0) {
+                return createdAt;
+            }
+        } catch (IOException | SecurityException ignored) {
+            // 创建时间不可用时仍可按修改时间找出最新文件。
+        }
+        return file.lastModified();
+    }
+
+    private static Color blend(Color background, Color accent) {
+        return new Color(
+                (background.getRed() * 4 + accent.getRed()) / 5,
+                (background.getGreen() * 4 + accent.getGreen()) / 5,
+                (background.getBlue() * 4 + accent.getBlue()) / 5);
+    }
+
     private boolean accepts(File file) {
         if (acceptedExtensions.isEmpty()) {
             return true;
@@ -425,11 +523,11 @@ public final class FileChooserDialog extends JDialog {
 
     private static final class FileNameRenderer extends DefaultTableCellRenderer {
         private final FileSystemView fileSystemView;
-        private final Set<String> successfulPathKeys;
+        private final Set<String> historyPathKeys;
 
-        private FileNameRenderer(FileSystemView fileSystemView, Set<String> successfulPathKeys) {
+        private FileNameRenderer(FileSystemView fileSystemView, Set<String> historyPathKeys) {
             this.fileSystemView = fileSystemView;
-            this.successfulPathKeys = successfulPathKeys;
+            this.historyPathKeys = historyPathKeys;
         }
 
         @Override
@@ -440,10 +538,10 @@ public final class FileChooserDialog extends JDialog {
             String name = fileSystemView.getSystemDisplayName(file);
             setText(name == null || name.isEmpty() ? file.getName() : name);
             setIcon(fileSystemView.getSystemIcon(file));
-            boolean signedSuccessfully = successfulPathKeys.contains(
+            boolean hasSigningHistory = historyPathKeys.contains(
                     SigningHistoryStore.normalizePathKey(file.getAbsolutePath()));
 
-            setToolTipText(signedSuccessfully ? "该文件曾签名成功，仍可继续选择" : null);
+            setToolTipText(hasSigningHistory ? "该文件有签名历史，仍可继续选择" : null);
             return this;
         }
     }

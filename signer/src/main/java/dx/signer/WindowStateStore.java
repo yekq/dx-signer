@@ -40,6 +40,7 @@ final class WindowStateStore {
     private static final Logger LOGGER = Logger.getLogger(WindowStateStore.class.getName());
     private final Path stateFile;
     private final Map<String, Rectangle> boundsByWindow = new LinkedHashMap<>();
+    private JSONObject settings = new JSONObject();
     private final Object writeLock = new Object();
     private final ScheduledExecutorService writer = Executors.newSingleThreadScheduledExecutor(task -> {
         Thread thread = new Thread(task, "window-state-writer");
@@ -88,6 +89,11 @@ final class WindowStateStore {
         scheduleWrite(0L);
     }
 
+    synchronized JSONObject themeSettings() {
+        JSONObject theme = settings.optJSONObject("theme");
+        return theme == null ? new JSONObject() : new JSONObject(theme.toString());
+    }
+
     private synchronized void remember(Window window, String key) {
         if (window instanceof Frame && ((Frame) window).getExtendedState() != Frame.NORMAL) {
             return;
@@ -117,6 +123,7 @@ final class WindowStateStore {
         }
         try {
             JSONObject root = new JSONObject(text);
+            settings = root;
             for (String key : root.keySet()) {
                 JSONObject item = root.optJSONObject(key);
                 if (item != null && item.optInt("width") > 0 && item.optInt("height") > 0) {
@@ -132,8 +139,12 @@ final class WindowStateStore {
     private void saveSafely() {
         // 退出钩子与后台任务可能同时执行，串行写入防止旧快照覆盖新快照。
         synchronized (writeLock) {
-            JSONObject root = new JSONObject();
+            JSONObject root;
             synchronized (this) {
+                root = new JSONObject(settings.toString());
+                if (root.optJSONObject("theme") == null) {
+                    root.put("theme", UiTheme.defaultSettings());
+                }
                 for (Map.Entry<String, Rectangle> entry : boundsByWindow.entrySet()) {
                     Rectangle bounds = entry.getValue();
                     root.put(entry.getKey(), new JSONObject().put("x", bounds.x).put("y", bounds.y)

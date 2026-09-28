@@ -56,6 +56,32 @@ java -jar dx-signer.jar
 历史记录以右侧独立列表窗口显示，可以通过主界面“签名历史”按钮重新打开。
 两扇窗口的位置与尺寸分别保存在 JAR 同目录的 `window-state.json`，
 历史数据仍保存在 `signing-history.json`。
+输入 APK 选择器默认隐藏签名历史中记录的原 APK 和输出 APK，取消勾选后可查看全部；
+失败记录中的原 APK 也会隐藏，旧版历史未保存输出路径，无法补查当时生成的输出文件。
+当前目录最新的未加固 APK 会高亮显示。历史列表会按原文件名显示签名类型，
+并用颜色区分不同项目。旧历史没有项目名时显示为“未记录”。
+
+可修改 `window-state.json` 的 `theme` 对象调整 GUI 颜色，重启后生效。
+颜色采用 `#RRGGBB` 格式；缺失或无效的颜色值会使用默认值。
+
+```json
+{
+  "main": {"x": 0, "y": 0, "width": 900, "height": 700},
+  "history": {"x": 908, "y": 0, "width": 900, "height": 700},
+  "theme": {
+    "background": "#EDF2F4",
+    "surface": "#FFFFFF",
+    "foreground": "#1D2B33",
+    "muted": "#5C6A70",
+    "accent": "#087E8B",
+    "selection": "#DCEDEF",
+    "success": "#247A55",
+    "failure": "#B2463C",
+    "border": "#C7D3D8",
+    "projectColors": {"示例项目": "#B05A37"}
+  }
+}
+```
 
 ```powershell
 java -jar signer/build/libs/dx-signer.jar -path D:\CodeWorkSpace\tools

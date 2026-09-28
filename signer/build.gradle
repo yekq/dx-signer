@@ -63,4 +63,23 @@ task verifyProjectSelection(type: JavaExec, dependsOn: testClasses) {
     jvmArgs '-Dfile.encoding=UTF-8', '-Djava.awt.headless=true'
 }
 
-check.dependsOn verifyProjectConfiguration, verifyApkPackage, verifyProjectSelection
+task verifySigningHistory(type: JavaExec, dependsOn: testClasses) {
+    classpath = sourceSets.test.runtimeClasspath
+    main = 'dx.signer.SigningHistoryStoreTest'
+    jvmArgs '-Dfile.encoding=UTF-8', '-Djava.awt.headless=true'
+}
+
+task verifyFileChooser(type: JavaExec, dependsOn: testClasses) {
+    classpath = sourceSets.test.runtimeClasspath
+    main = 'dx.signer.FileChooserDialogTest'
+    jvmArgs '-Dfile.encoding=UTF-8', '-Djava.awt.headless=true'
+}
+
+task verifyUiTheme(type: JavaExec, dependsOn: testClasses) {
+    classpath = sourceSets.test.runtimeClasspath
+    main = 'dx.signer.UiThemeTest'
+    jvmArgs '-Dfile.encoding=UTF-8', '-Djava.awt.headless=true'
+}
+
+check.dependsOn verifyProjectConfiguration, verifyApkPackage, verifyProjectSelection,
+        verifySigningHistory, verifyFileChooser, verifyUiTheme

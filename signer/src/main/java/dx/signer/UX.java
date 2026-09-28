@@ -24,6 +24,7 @@ import org.slf4j.impl.SimpleLogger;
 
 import java.awt.Component;
 import java.awt.BorderLayout;
+import java.awt.Color;
 import java.awt.FlowLayout;
 import java.awt.Container;
 import java.awt.Dimension;
@@ -39,6 +40,7 @@ import java.nio.file.Files;
 import java.nio.file.Path;
 import java.nio.file.Paths;
 import java.security.KeyStore;
+import java.util.ArrayList;
 import java.util.Arrays;
 import java.util.Collections;
 import java.util.Enumeration;
@@ -149,23 +151,27 @@ public final class UX {
         mainWindowHeight = screen.height * 9 / 10;
         initialChooserShown = false;
 
+        WindowStateStore states = null;
+        try {
+            states = new WindowStateStore(getHistoryPath().resolveSibling("window-state.json"));
+            UiTheme.apply(states.themeSettings());
+        } catch (IOException exception) {
+            System.err.println("读取窗口布局失败: " + exception.getMessage());
+            UiTheme.apply(null);
+        }
         UX ux = new UX();
         JFrame frame = new JFrame("Apk签名&多渠道工具:" + applicationRoot);
         frame.setContentPane(ux.createMainContent());
         frame.setDefaultCloseOperation(JFrame.EXIT_ON_CLOSE);
         frame.setSize(mainWindowWidth, mainWindowHeight);
         frame.setLocation(screen.x, screen.y + (screen.height - mainWindowHeight) / 2);
-        try {
-            WindowStateStore states = new WindowStateStore(
-                    ux.getHistoryPath().resolveSibling("window-state.json"));
+        if (states != null) {
             states.track(frame, "main", frame.getBounds());
             ux.historyWindow = new SigningHistoryWindow(frame, states);
-            ux.refreshHistoryWindow();
-        } catch (IOException exception) {
-            ux.log("读取窗口布局失败: " + exception.getMessage());
+        } else {
             ux.historyWindow = new SigningHistoryWindow(frame, null);
-            ux.refreshHistoryWindow();
         }
+        ux.refreshHistoryWindow();
         frame.addWindowFocusListener(new WindowFocusListener() {
             @Override
             public void windowGainedFocus(WindowEvent event) {
@@ -200,6 +206,7 @@ public final class UX {
     /** 项目选择区独立于设计器布局，避免重新生成表单时覆盖业务监听器。 */
     private JPanel createMainContent() {
         JPanel toolbar = new JPanel(new FlowLayout(FlowLayout.LEFT));
+        toolbar.setBorder(BorderFactory.createEmptyBorder(8, 10, 4, 10));
         toolbar.add(new JLabel("签名项目"));
         toolbar.add(projectSelector);
         JButton historyButton = new JButton("签名历史");
@@ -211,6 +218,8 @@ public final class UX {
         toolbar.add(historyButton);
         JPanel header = new JPanel(new BorderLayout());
         header.add(toolbar, BorderLayout.NORTH);
+        projectStatus.setBorder(BorderFactory.createEmptyBorder(2, 14, 8, 14));
+        projectStatus.setForeground(UIManager.getColor("Signer.muted"));
         header.add(projectStatus, BorderLayout.SOUTH);
         JPanel content = new JPanel(new BorderLayout());
         content.add(header, BorderLayout.NORTH);
@@ -218,6 +227,13 @@ public final class UX {
         formScrollPane.setBorder(null);
         formScrollPane.getVerticalScrollBar().setUnitIncrement(24);
         content.add(formScrollPane, BorderLayout.CENTER);
+        Color accent = UIManager.getColor("Signer.accent");
+        if (accent != null) {
+            signBtn.setBackground(accent);
+            int brightness = accent.getRed() * 299 + accent.getGreen() * 587 + accent.getBlue() * 114;
+            signBtn.setForeground(brightness < 150000 ? Color.WHITE : Color.BLACK);
+            signBtn.setOpaque(true);
+        }
         return content;
     }
 
@@ -322,11 +338,11 @@ public final class UX {
             String... extensions) {
         String path = pathField.getText().trim();
         File initialPath = path.isEmpty() ? null : new File(path);
-        Set<String> successfulPaths = signingHistoryStore == null
+        Set<String> historyApkPaths = signingHistoryStore == null
                 ? Collections.emptySet()
-                : signingHistoryStore.successfulPathKeys();
+                : signingHistoryStore.historyApkPathKeys();
         return FileChooserDialog.chooseFile(
-                parent, initialPath, description, successfulPaths, extensions);
+                parent, initialPath, description, historyApkPaths, extensions);
     }
 
     private void showChooseAppFileDialog() {
@@ -455,7 +471,7 @@ public final class UX {
 
         return new SigningRequest(inputPath, outputPath, keyStorePath, channelListPath,
                 inputFileName, keyStorePassword, keyPassword, keyAlias, progressBar1.getString(),
-                activeProject.getApplicationPackageName());
+                activeProject.getApplicationPackageName(), activeProject.getProjectName());
     }
 
     private boolean confirmOverwrite(SigningRequest request) {
@@ -503,6 +519,7 @@ public final class UX {
     }
 
     private void executeSigning(SigningRequest request) {
+        List<Path> generatedOutputs = new ArrayList<>();
         try {
             int result;
             Path actualOutputPath;
@@ -516,7 +533,8 @@ public final class UX {
                         request.keyStorePath,
                         request.keyStorePassword,
                         request.keyAlias,
-                        request.keyPassword, request.applicationPackageName);
+                        request.keyPassword, request.applicationPackageName,
+                        generatedOutputs::add);
             } else {
                 actualOutputPath = request.outputPath;
                 result = SignWorker.signApk(
@@ -526,13 +544,17 @@ public final class UX {
                         request.keyStorePassword,
                         request.keyAlias,
                         request.keyPassword, request.applicationPackageName);
+                if (result == 0) {
+                    generatedOutputs.add(actualOutputPath);
+                }
             }
 
-            recordSigningResult(request.inputPath, result == 0);
+            recordSigningResult(request.inputPath, result == 0, request.projectName,
+                    generatedOutputs);
             Path completedOutputPath = actualOutputPath;
             SwingUtilities.invokeLater(() -> showSigningResult(request, completedOutputPath, result));
         } catch (Exception exception) {
-            recordSigningResult(request.inputPath, false);
+            recordSigningResult(request.inputPath, false, request.projectName, generatedOutputs);
             log("签名失败: " + exception.getMessage());
             SwingUtilities.invokeLater(() -> JOptionPane.showMessageDialog(
                     topPanel, "签名失败: " + exception.getMessage(), "签名结果", JOptionPane.ERROR_MESSAGE));
@@ -582,12 +604,13 @@ public final class UX {
         }
     }
 
-    private void recordSigningResult(Path inputPath, boolean successful) {
+    private void recordSigningResult(Path inputPath, boolean successful, String projectName,
+            List<Path> outputFiles) {
         if (signingHistoryStore == null) {
             return;
         }
         try {
-            signingHistoryStore.add(inputPath, successful);
+            signingHistoryStore.add(inputPath, successful, projectName, outputFiles);
             SwingUtilities.invokeLater(this::refreshHistoryWindow);
         } catch (IOException | RuntimeException exception) {
             log("保存签名历史失败: " + exception.getMessage());
@@ -741,7 +764,7 @@ public final class UX {
      * Resolves the history file beside the running JAR, with an IDE-friendly
      * fallback.
      */
-    private Path getHistoryPath() {
+    private static Path getHistoryPath() {
         try {
             if (UX.class.getProtectionDomain().getCodeSource() != null) {
                 Path codeLocation = Paths.get(
@@ -751,7 +774,7 @@ public final class UX {
                 }
             }
         } catch (URISyntaxException | RuntimeException exception) {
-            log("无法定位运行中的 JAR，将使用应用目录保存历史: " + exception.getMessage());
+            System.err.println("无法定位运行中的 JAR，将使用应用目录保存历史: " + exception.getMessage());
         }
 
         Path fallbackDirectory = applicationRoot.isEmpty()
@@ -777,10 +800,12 @@ public final class UX {
         private final String keyAlias;
         private final String originalProgressText;
         private final String applicationPackageName;
+        private final String projectName;
 
         private SigningRequest(Path inputPath, Path outputPath, Path keyStorePath, Path channelListPath,
                 String inputFileName, String keyStorePassword, String keyPassword,
-                String keyAlias, String originalProgressText, String applicationPackageName) {
+                String keyAlias, String originalProgressText, String applicationPackageName,
+                String projectName) {
             this.inputPath = inputPath;
             this.outputPath = outputPath;
             this.keyStorePath = keyStorePath;
@@ -791,6 +816,7 @@ public final class UX {
             this.keyAlias = keyAlias;
             this.originalProgressText = originalProgressText;
             this.applicationPackageName = applicationPackageName;
+            this.projectName = projectName;
         }
 
         private boolean hasChannelList() {
