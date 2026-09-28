@@ -7,6 +7,8 @@
 # 输出文件位于 signer/build/libs/dx-signer.jar
 ```
 
+使用 Java 11 执行 `./gradlew :signer:check :signer:fatJar`，会同时验证多项目配置保存、APK 包名读取和界面项目切换。
+
 ## 图形界面
 
 请双击`dx-signer.jar`文件启动，或者使用命令行启动。
@@ -18,6 +20,46 @@ java -jar dx-signer.jar
     您需要Java 8+的运行环境，推荐使用OpenJDK的实现。
     请根据界面提示操作。
     当指定渠道清单时，工具进入多渠道模式， 如果 输出apk/aab 指向一个文件，那么渠道包会保存在同目录下； 如果 输出apk/aab 指向目录，那么渠道包会保存在这个目录下。
+
+### 多项目配置
+
+配置文件仍命名为 `cfg.properties`，内容改为 UTF-8 JSON 数组。默认从 JAR 同目录读取；
+传入 `-path <目录>` 时从指定目录读取。为兼容旧工具，当该位置没有配置时才读取 `etc/cfg.properties`。
+旧 Properties 格式也可以读取，保存后转换为数组。
+
+```json
+[
+  {
+    "projectName": "示例项目",
+    "applicationPackageName": "cn.example.app",
+    "config-read-only": false,
+    "in": "input",
+    "out": "output",
+    "in-filename": "",
+    "ks": "keys/example.jks",
+    "ks-pass": "",
+    "key-pass": "",
+    "ks-key-alias": "{{auto}}",
+    "channel-list": ""
+  }
+]
+```
+
+`projectName` 必须非空且唯一；`applicationPackageName` 使用 APK 的真实包名。
+数组中的相对路径以配置文件目录为基准，旧 `etc/cfg.properties` 的相对路径以项目根目录为基准。
+保存时只更新当前项目，保留其他项目及扩展字段；只读配置不自动写回。
+
+界面默认选择“自动”，读取所选 APK 内的包名并匹配项目。有多个匹配、无匹配或包名为空时，
+需要在下拉框手动选择项目；AAB 使用手动选择。手动指定项目时以该项目的证书配置为准。
+选择 APK 后继续原有自动开始签名的流程。
+
+历史记录以右侧独立列表窗口显示，可以通过主界面“签名历史”按钮重新打开。
+两扇窗口的位置与尺寸分别保存在 JAR 同目录的 `window-state.json`，
+历史数据仍保存在 `signing-history.json`。
+
+```powershell
+java -jar signer/build/libs/dx-signer.jar -path D:\CodeWorkSpace\tools
+```
 
 ## 命令行界面
 
@@ -34,7 +76,8 @@ java -jar dx-signer.jar sign [--option value]+
 
 | option       | type   | 必须  | 描述                                                             |
 | :----------- | :----- | :---: | ---------------------------------------------------------------- |
-| config       | Path   |       | 配置文件,文件格式满足java.util.Properties要求，key值与option一样 |
+| config       | Path   |       | 多项目 JSON 数组配置文件，兼容旧 Properties 格式 |
+| projectName  | String |       | 指定项目名称，auto 表示根据输入 APK 包名匹配 |
 | in           | Path   |  是   | 输入文件apk、aab                                                 |
 | out          | Path   |  是   | 输出文件或文件夹                                                 |
 | ks           | Path   |  是   | Keystore位置                                                     |
@@ -54,8 +97,11 @@ java -jar dx-signer.jar sign [--option value]+
 # 使用etc/cfg.properties指定的参数进行签名
 java -jar dx-signer.apk sign --config etc/cfg.properties
 
-# 使用etc/cfg.properties, 并使用keystore.properties里面的证书信息进行签名
-java -jar dx-signer.apk sign --config etc/cfg.properties --config keystore.properties
+# 指定项目；显式命令行参数覆盖配置，与参数顺序无关
+java -jar dx-signer.jar sign --config cfg.properties --projectName 示例项目 --in input.apk --out signed.apk
+
+# 按 APK 包名自动匹配项目
+java -jar dx-signer.jar sign --config cfg.properties --projectName auto --in input.apk --out signed.apk
 
 # 使用etc/cfg.properties指定的参数, 但是修改掉apk的输出路径
 java -jar dx-signer.apk sign --config etc/cfg.properties --out path/to/other/location.apk

@@ -131,6 +131,10 @@ final class SigningHistoryStore {
             return fileName;
         }
 
+        String path() {
+            return path;
+        }
+
         long timestamp() {
             return timestamp;
         }

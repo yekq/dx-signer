@@ -23,30 +23,26 @@ import com.intellij.uiDesigner.core.GridLayoutManager;
 import org.slf4j.impl.SimpleLogger;
 
 import java.awt.Component;
+import java.awt.BorderLayout;
+import java.awt.FlowLayout;
 import java.awt.Container;
 import java.awt.Dimension;
 import java.awt.Font;
 import java.awt.Image;
 import java.awt.Insets;
-import java.awt.Toolkit;
 import java.awt.event.WindowEvent;
 import java.awt.event.WindowFocusListener;
-import java.io.BufferedWriter;
 import java.io.File;
 import java.io.IOException;
 import java.net.URISyntaxException;
-import java.nio.charset.StandardCharsets;
 import java.nio.file.Files;
 import java.nio.file.Path;
 import java.nio.file.Paths;
 import java.security.KeyStore;
-import java.time.Instant;
-import java.time.ZoneId;
-import java.time.format.DateTimeFormatter;
 import java.util.Arrays;
 import java.util.Collections;
 import java.util.Enumeration;
-import java.util.Properties;
+import java.util.List;
 import java.util.Set;
 import java.util.concurrent.ExecutorService;
 import java.util.concurrent.Executors;
@@ -69,6 +65,7 @@ import javax.swing.JTabbedPane;
 import javax.swing.JTextArea;
 import javax.swing.JTextField;
 import javax.swing.SwingUtilities;
+import javax.swing.SwingWorker;
 import javax.swing.UIManager;
 import javax.swing.event.PopupMenuEvent;
 import javax.swing.event.PopupMenuListener;
@@ -81,20 +78,11 @@ public final class UX {
     private static final String AUTO_KEY_ALIAS = "{{auto}}";
     private static final String CONFIG_DIRECTORY = "etc";
     private static final String CONFIG_FILE_NAME = "cfg.properties";
-    private static final String CONFIG_KEY_STORE = "ks";
-    private static final String CONFIG_INPUT = "in";
-    private static final String CONFIG_OUTPUT = "out";
-    private static final String CONFIG_KEY_ALIAS = "ks-key-alias";
-    private static final String CONFIG_INPUT_FILE_NAME = "in-filename";
-    private static final String CONFIG_CHANNEL_LIST = "channel-list";
-    private static final String CONFIG_KEY_STORE_PASSWORD = "ks-pass";
-    private static final String CONFIG_KEY_PASSWORD = "key-pass";
+    private static final String AUTO_PROJECT = "自动（按 APK 包名匹配）";
     private static final String HISTORY_FILE_NAME = "signing-history.json";
-    private static final DateTimeFormatter HISTORY_TIME_FORMAT =
-            DateTimeFormatter.ofPattern("yyyy-MM-dd HH:mm:ss").withZone(ZoneId.systemDefault());
     private static String applicationRoot = "";
     private final ExecutorService signingExecutor = Executors.newSingleThreadExecutor();
-    // These fields are bound by UX.form; binding names must remain synchronized.
+    // 表单字段必须与 UX.form 中的绑定名称保持一致。
     private JButton inBtn;
     private JTextField inPathTF;
     private JTabbedPane tabbedPane1;
@@ -103,7 +91,6 @@ public final class UX {
     private JTextField outPathTF;
     private JButton signBtn;
     private JTextArea loggingTA;
-    private JTextArea historyTA;
     private JCheckBox savePwCheckBox;
     private JComboBox<String> keyAliasCB;
     private JPasswordField keyPassPF;
@@ -118,6 +105,12 @@ public final class UX {
     private boolean readOnly = false;
     private String inputFileName = "";
     private SigningHistoryStore signingHistoryStore;
+    private ProjectConfigStore projectConfigStore;
+    private SignerConfigBean activeProject;
+    private final JComboBox<String> projectSelector = new JComboBox<>();
+    private final JLabel projectStatus = new JLabel("请选择 APK 或指定项目");
+    private SigningHistoryWindow historyWindow;
+    private boolean signingBusy;
 
     private static int mainWindowWidth;
     private static int mainWindowHeight;
@@ -150,17 +143,29 @@ public final class UX {
     }
 
     private static void showMainWindow() {
-        Dimension screenSize = Toolkit.getDefaultToolkit().getScreenSize();
-        mainWindowWidth = screenSize.width * 9 / 10;
-        mainWindowHeight = screenSize.height * 9 / 10;
+        java.awt.Rectangle screen = java.awt.GraphicsEnvironment.getLocalGraphicsEnvironment()
+                .getMaximumWindowBounds();
+        mainWindowWidth = Math.max(480, screen.width / 2);
+        mainWindowHeight = screen.height * 9 / 10;
         initialChooserShown = false;
 
         UX ux = new UX();
         JFrame frame = new JFrame("Apk签名&多渠道工具:" + applicationRoot);
-        frame.setContentPane(ux.topPanel);
+        frame.setContentPane(ux.createMainContent());
         frame.setDefaultCloseOperation(JFrame.EXIT_ON_CLOSE);
         frame.setSize(mainWindowWidth, mainWindowHeight);
-        frame.setLocationRelativeTo(null);
+        frame.setLocation(screen.x, screen.y + (screen.height - mainWindowHeight) / 2);
+        try {
+            WindowStateStore states = new WindowStateStore(
+                    ux.getHistoryPath().resolveSibling("window-state.json"));
+            states.track(frame, "main", frame.getBounds());
+            ux.historyWindow = new SigningHistoryWindow(frame, states);
+            ux.refreshHistoryWindow();
+        } catch (IOException exception) {
+            ux.log("读取窗口布局失败: " + exception.getMessage());
+            ux.historyWindow = new SigningHistoryWindow(frame, null);
+            ux.refreshHistoryWindow();
+        }
         frame.addWindowFocusListener(new WindowFocusListener() {
             @Override
             public void windowGainedFocus(WindowEvent event) {
@@ -176,16 +181,63 @@ public final class UX {
             }
         });
         frame.setVisible(true);
+        if (ux.historyWindow != null) {
+            ux.historyWindow.showHistory();
+        }
     }
 
     public UX() {
         configureKeyAliasSelector();
         initializeSigningHistory();
+        configureProjectSelector();
         loadLocalConfig();
         configureActions();
         configureLogging();
-        refreshHistoryText();
+        refreshHistoryWindow();
         applyReadOnlyState();
+    }
+
+    /** 项目选择区独立于设计器布局，避免重新生成表单时覆盖业务监听器。 */
+    private JPanel createMainContent() {
+        JPanel toolbar = new JPanel(new FlowLayout(FlowLayout.LEFT));
+        toolbar.add(new JLabel("签名项目"));
+        toolbar.add(projectSelector);
+        JButton historyButton = new JButton("签名历史");
+        historyButton.addActionListener(event -> {
+            if (historyWindow != null) {
+                historyWindow.showHistory();
+            }
+        });
+        toolbar.add(historyButton);
+        JPanel header = new JPanel(new BorderLayout());
+        header.add(toolbar, BorderLayout.NORTH);
+        header.add(projectStatus, BorderLayout.SOUTH);
+        JPanel content = new JPanel(new BorderLayout());
+        content.add(header, BorderLayout.NORTH);
+        JScrollPane formScrollPane = new JScrollPane(topPanel);
+        formScrollPane.setBorder(null);
+        formScrollPane.getVerticalScrollBar().setUnitIncrement(24);
+        content.add(formScrollPane, BorderLayout.CENTER);
+        return content;
+    }
+
+    private void configureProjectSelector() {
+        projectSelector.addItem(AUTO_PROJECT);
+        projectSelector.addActionListener(event -> {
+            if (projectConfigStore == null || signingBusy) {
+                return;
+            }
+            if (projectSelector.getSelectedIndex() == 0) {
+                clearProjectSelection();
+                projectStatus.setText("自动模式：签名前根据 APK 包名匹配配置");
+            } else {
+                SignerConfigBean project = projectConfigStore.findByProjectName(
+                        (String) projectSelector.getSelectedItem());
+                if (project != null) {
+                    applyProject(project);
+                }
+            }
+        });
     }
 
     private void configureActions() {
@@ -251,29 +303,23 @@ public final class UX {
     }
 
     private void applyReadOnlyState() {
-        if (!readOnly) {
-            return;
-        }
-
-        savePwCheckBox.setEnabled(false);
-        savePwCheckBox.setSelected(false);
-        channelBtn.setEnabled(false);
-        channelPathTF.setEnabled(false);
-        inBtn.setEnabled(false);
+        boolean editable = !readOnly && !signingBusy;
+        savePwCheckBox.setEnabled(editable);
+        channelBtn.setEnabled(editable);
+        channelPathTF.setEnabled(editable);
+        inBtn.setEnabled(!signingBusy);
         inPathTF.setEnabled(false);
-        outPathTF.setEnabled(false);
-
-        if (!ksPathTF.getText().isEmpty()) {
-            ksBtn.setEnabled(false);
-            ksPathTF.setEnabled(false);
-            keyAliasCB.setEnabled(false);
-            ksPassPF.setEnabled(false);
-            keyPassPF.setEnabled(false);
-        }
+        outPathTF.setEnabled(editable);
+        ksBtn.setEnabled(editable);
+        ksPathTF.setEnabled(editable);
+        keyAliasCB.setEnabled(editable);
+        ksPassPF.setEnabled(editable);
+        keyPassPF.setEnabled(editable);
+        projectSelector.setEnabled(!signingBusy);
     }
 
     private File chooseFile(Component parent, JTextField pathField, String description,
-                            String... extensions) {
+            String... extensions) {
         String path = pathField.getText().trim();
         File initialPath = path.isEmpty() ? null : new File(path);
         Set<String> successfulPaths = signingHistoryStore == null
@@ -306,7 +352,68 @@ public final class UX {
             channelPathTF.setText(selected.getAbsolutePath());
         }
     }
+
     private void onSubmitClick() {
+        if (signingBusy) {
+            return;
+        }
+        if (inPathTF.getText().trim().isEmpty()
+                || !Files.isRegularFile(new File(inPathTF.getText()).toPath())) {
+            JOptionPane.showMessageDialog(topPanel, "请先选择有效的 APK 或 AAB 文件");
+            return;
+        }
+        if (projectSelector.getSelectedIndex() == 0) {
+            matchProjectAndSign();
+        } else if (activeProject != null) {
+            submitSigningRequest();
+        } else {
+            JOptionPane.showMessageDialog(topPanel, "请先配置并选择签名项目");
+        }
+    }
+
+    /** 包名读取在后台执行；无匹配或存在歧义时禁止沿用上一次的证书。 */
+    private void matchProjectAndSign() {
+        if (projectConfigStore == null || projectConfigStore.projects().isEmpty()) {
+            JOptionPane.showMessageDialog(topPanel, "未加载项目配置，请检查 cfg.properties");
+            return;
+        }
+        final Path input = Paths.get(inPathTF.getText());
+        final String idleText = progressBar1.getString();
+        clearProjectSelection();
+        setSigningInProgress(true, idleText);
+        progressBar1.setString("识别 APK 包名...");
+        new SwingWorker<String, Void>() {
+            @Override
+            protected String doInBackground() throws Exception {
+                return ApkPackageReader.readPackageName(input);
+            }
+
+            @Override
+            protected void done() {
+                setSigningInProgress(false, idleText);
+                try {
+                    String packageName = get();
+                    List<SignerConfigBean> matches = projectConfigStore.matchPackageName(packageName);
+                    if (matches.size() != 1) {
+                        projectStatus.setText("包名：" + packageName + "，匹配项目数：" + matches.size());
+                        JOptionPane.showMessageDialog(topPanel, matches.isEmpty()
+                                ? "包名 " + packageName + " 没有对应配置，请手动选择签名项目"
+                                : "包名 " + packageName + " 对应多个项目，请手动指定签名项目");
+                        return;
+                    }
+                    applyProject(matches.get(0));
+                    submitSigningRequest();
+                } catch (Exception exception) {
+                    projectStatus.setText("包名识别失败，请手动选择签名项目");
+                    JOptionPane.showMessageDialog(topPanel,
+                            "无法识别包名，请确认 APK 有效；AAB 请手动选择签名项目",
+                            "项目识别失败", JOptionPane.WARNING_MESSAGE);
+                }
+            }
+        }.execute();
+    }
+
+    private void submitSigningRequest() {
         SigningRequest request;
         try {
             request = createSigningRequest();
@@ -327,6 +434,15 @@ public final class UX {
     }
 
     private SigningRequest createSigningRequest() {
+        if (activeProject == null || ksPathTF.getText().trim().isEmpty()) {
+            throw new IllegalArgumentException("当前项目未配置 KeyStore");
+        }
+        if (!Files.isRegularFile(Paths.get(ksPathTF.getText().trim()))) {
+            throw new IllegalArgumentException("KeyStore 文件不存在，请检查项目配置");
+        }
+        if (outPathTF.getText().trim().isEmpty()) {
+            throw new IllegalArgumentException("请选择输出路径");
+        }
         Path inputPath = Paths.get(inPathTF.getText().trim());
         Path outputPath = Paths.get(outPathTF.getText().trim());
         Path keyStorePath = Paths.get(ksPathTF.getText().trim());
@@ -338,7 +454,8 @@ public final class UX {
         String keyAlias = selectedAlias == null ? AUTO_KEY_ALIAS : selectedAlias;
 
         return new SigningRequest(inputPath, outputPath, keyStorePath, channelListPath,
-                inputFileName, keyStorePassword, keyPassword, keyAlias, progressBar1.getString());
+                inputFileName, keyStorePassword, keyPassword, keyAlias, progressBar1.getString(),
+                activeProject.getApplicationPackageName());
     }
 
     private boolean confirmOverwrite(SigningRequest request) {
@@ -358,29 +475,24 @@ public final class UX {
                 JOptionPane.YES_NO_OPTION);
     }
 
-    /** Persists non-secret paths and optionally the passwords selected by the user. */
+    /** 仅更新当前项目，保留数组中其他项目及当前项目的扩展字段。 */
     private void saveLocalConfig(SigningRequest request) {
-        if (readOnly) {
+        if (readOnly || projectConfigStore == null || activeProject == null) {
             return;
         }
-
-        Properties properties = new Properties();
-        properties.setProperty(CONFIG_KEY_STORE, request.keyStorePath.toString());
-        properties.setProperty(CONFIG_INPUT, parentPath(request.inputPath));
-        properties.setProperty(CONFIG_KEY_ALIAS, request.keyAlias);
-        properties.setProperty(CONFIG_INPUT_FILE_NAME, "");
-        properties.setProperty(CONFIG_OUTPUT, parentPath(request.outputPath));
-        properties.setProperty(CONFIG_CHANNEL_LIST,
-                request.channelListPath == null ? "" : request.channelListPath.toString());
-
-        if (savePwCheckBox.isSelected()) {
-            properties.setProperty(CONFIG_KEY_STORE_PASSWORD, request.keyStorePassword);
-            properties.setProperty(CONFIG_KEY_PASSWORD, request.keyPassword);
-        }
-
-        try (BufferedWriter writer = Files.newBufferedWriter(getConfigPath(), StandardCharsets.UTF_8)) {
-            properties.store(writer, "#");
-        } catch (IOException exception) {
+        SignerConfigBean updated = new SignerConfigBean(activeProject.toProperties());
+        updated.setKs(request.keyStorePath.toString());
+        updated.setIn(parentPath(request.inputPath));
+        updated.setKsKeyAlias(request.keyAlias);
+        updated.setInFilename("");
+        updated.setOut(parentPath(request.outputPath));
+        updated.setChannelList(request.channelListPath == null ? "" : request.channelListPath.toString());
+        updated.setKsPass(savePwCheckBox.isSelected() ? request.keyStorePassword : "");
+        updated.setKeyPass(savePwCheckBox.isSelected() ? request.keyPassword : "");
+        try {
+            projectConfigStore.update(updated);
+            activeProject = updated;
+        } catch (IOException | RuntimeException exception) {
             log("保存配置失败: " + exception.getMessage());
         }
     }
@@ -404,7 +516,7 @@ public final class UX {
                         request.keyStorePath,
                         request.keyStorePassword,
                         request.keyAlias,
-                        request.keyPassword);
+                        request.keyPassword, request.applicationPackageName);
             } else {
                 actualOutputPath = request.outputPath;
                 result = SignWorker.signApk(
@@ -413,7 +525,7 @@ public final class UX {
                         request.keyStorePath,
                         request.keyStorePassword,
                         request.keyAlias,
-                        request.keyPassword);
+                        request.keyPassword, request.applicationPackageName);
             }
 
             recordSigningResult(request.inputPath, result == 0);
@@ -453,11 +565,14 @@ public final class UX {
     }
 
     private void setSigningInProgress(boolean signing, String idleText) {
+        signingBusy = signing;
         signBtn.setEnabled(!signing);
+        applyReadOnlyState();
         progressBar1.setIndeterminate(signing);
         progressBar1.setString(signing ? "签名中..." : idleText);
         progressBar1.setStringPainted(true);
     }
+
     private void initializeSigningHistory() {
         try {
             signingHistoryStore = new SigningHistoryStore(
@@ -473,26 +588,19 @@ public final class UX {
         }
         try {
             signingHistoryStore.add(inputPath, successful);
-            SwingUtilities.invokeLater(this::refreshHistoryText);
+            SwingUtilities.invokeLater(this::refreshHistoryWindow);
         } catch (IOException | RuntimeException exception) {
             log("保存签名历史失败: " + exception.getMessage());
         }
     }
 
-    private void refreshHistoryText() {
-        if (historyTA == null || signingHistoryStore == null) {
+    private void refreshHistoryWindow() {
+        if (historyWindow == null || signingHistoryStore == null) {
             return;
         }
-        StringBuilder history = new StringBuilder("文件名\t时间\t状态");
-        for (SigningHistoryStore.Record record : signingHistoryStore.records()) {
-            history.append(System.lineSeparator())
-                    .append(record.fileName()).append('\t')
-                    .append(HISTORY_TIME_FORMAT.format(Instant.ofEpochMilli(record.timestamp()))).append('\t')
-                    .append(record.successful() ? "成功" : "失败");
-        }
-        historyTA.setText(history.toString());
-        historyTA.setCaretPosition(0);
+        historyWindow.setRecords(signingHistoryStore.records());
     }
+
     private void log(String message) {
         if (loggingTA == null) {
             System.out.println(message);
@@ -515,31 +623,53 @@ public final class UX {
     private void loadLocalConfig() {
         try {
             Path configFile = getConfigPath();
-            if (!Files.isRegularFile(configFile)) {
-                return;
+            projectConfigStore = new ProjectConfigStore(configFile);
+            for (SignerConfigBean project : projectConfigStore.projects()) {
+                projectSelector.addItem(project.getProjectName());
             }
-
-            SignerConfigBean config = new SignerConfigBean(CommandLine.load(configFile));
-            readOnly = config.isReadOnly();
-            ksPathTF.setText(config.getKs());
-            ksPassPF.setText(config.getKsPass());
-            keyPassPF.setText(config.getKeyPass());
-            channelPathTF.setText(config.getChannelList());
-
-            if (!config.getIn().isEmpty()) {
-                setInput(new File(config.getIn()), config.getInFilename());
+            if (!projectConfigStore.projects().isEmpty()) {
+                inPathTF.setText(projectConfigStore.projects().get(0).getIn());
             }
-            if (!config.getOut().isEmpty()) {
-                outPathTF.setText(config.getOut());
-            }
-            if (!AUTO_KEY_ALIAS.equals(config.getKsKeyAlias()) && !config.getKsKeyAlias().isEmpty()) {
-                keyAliasCB.addItem(config.getKsKeyAlias());
-                keyAliasCB.setSelectedItem(config.getKsKeyAlias());
-            }
-            inPathTF.setText(config.getIn());
-        } catch (IOException exception) {
+            projectStatus.setText("已加载 " + projectConfigStore.projects().size() + " 个项目，自动按 APK 包名匹配");
+        } catch (IOException | RuntimeException exception) {
             log("读取配置失败: " + exception.getMessage());
+            projectStatus.setText("项目配置加载失败，请检查 cfg.properties");
         }
+    }
+
+    private void clearProjectSelection() {
+        activeProject = null;
+        readOnly = false;
+        ksPathTF.setText("");
+        ksPassPF.setText("");
+        keyPassPF.setText("");
+        channelPathTF.setText("");
+        resetKeyAliasOptions();
+        applyReadOnlyState();
+    }
+
+    private void applyProject(SignerConfigBean project) {
+        activeProject = project;
+        readOnly = project.isReadOnly();
+        ksPathTF.setText(project.getKs());
+        ksPassPF.setText(project.getKsPass());
+        keyPassPF.setText(project.getKeyPass());
+        channelPathTF.setText(project.getChannelList());
+        resetKeyAliasOptions();
+        if (!project.getKsKeyAlias().isEmpty() && !AUTO_KEY_ALIAS.equals(project.getKsKeyAlias())) {
+            keyAliasCB.addItem(project.getKsKeyAlias());
+            keyAliasCB.setSelectedItem(project.getKsKeyAlias());
+        }
+        savePwCheckBox.setSelected(!project.getKsPass().isEmpty() || !project.getKeyPass().isEmpty());
+        File input = new File(inPathTF.getText());
+        if (input.isFile()) {
+            configureOutputPath(input);
+        } else {
+            inPathTF.setText(project.getIn());
+            outPathTF.setText(project.getOut());
+        }
+        projectStatus.setText("当前项目：" + project.getProjectName() + "  包名：" + project.getApplicationPackageName());
+        applyReadOnlyState();
     }
 
     private void setInput(File file) {
@@ -551,7 +681,20 @@ public final class UX {
                 ? file.getName()
                 : configuredFileName;
         inPathTF.setText(file.getAbsolutePath());
-        outPathTF.setText(new File(file.getParent(), deriveOutputFileName(inputFileName)).toString());
+        configureOutputPath(file);
+    }
+
+    private void configureOutputPath(File input) {
+        String outputName = deriveOutputFileName(input.getName());
+        if (activeProject == null || activeProject.getOut().isEmpty()) {
+            outPathTF.setText(new File(input.getParent(), outputName).toString());
+            return;
+        }
+        Path configured = Paths.get(activeProject.getOut());
+        String lowerName = configured.toString().toLowerCase(java.util.Locale.ROOT);
+        boolean outputFile = lowerName.endsWith(".apk") || lowerName.endsWith(".aab");
+        outPathTF.setText((outputFile && !Files.isDirectory(configured)
+                ? configured : configured.resolve(outputName)).toString());
     }
 
     /** Applies the product-specific naming rules used for signed output files. */
@@ -563,33 +706,41 @@ public final class UX {
 
         String extension = inputName.substring(extensionIndex);
         String outputName = inputName;
+        outputName = outputName.replaceFirst("未加固_", "");
         if (outputName.startsWith("dx_unsigned")) {
             outputName = "正式" + outputName.substring("dx_unsigned".length());
         }
 
-        int protectedMarker = outputName.indexOf("_jiagu");
-        if (protectedMarker >= 0) {
-            outputName = outputName.substring(0, Math.max(0, protectedMarker - 4)) + extension;
+        int jiaguMarker = outputName.indexOf("_jiagu");
+        if (jiaguMarker >= 0) {
+            outputName = outputName.substring(0, Math.max(0, jiaguMarker - 4)) + extension;
         }
 
         int unsignedMarker = outputName.indexOf("_unsign");
         if (unsignedMarker >= 0) {
             outputName = outputName.substring(0, unsignedMarker) + extension;
         }
+
+        int protectedMarker = outputName.indexOf("_protected");
+        if (protectedMarker >= 0) {
+            outputName = outputName.substring(0, protectedMarker) + extension;
+        }
+
         return outputName;
     }
 
-    private Path getConfigDirectory() throws IOException {
-        Path configDirectory = Paths.get(applicationRoot).resolve(CONFIG_DIRECTORY);
-        Files.createDirectories(configDirectory);
-        return configDirectory;
-    }
-
     private Path getConfigPath() throws IOException {
-        return getConfigDirectory().resolve(CONFIG_FILE_NAME);
+        Path directory = applicationRoot.isEmpty() ? getHistoryPath().getParent()
+                : Paths.get(applicationRoot).toAbsolutePath().normalize();
+        Path config = directory.resolve(CONFIG_FILE_NAME);
+        Path legacyConfig = directory.resolve(CONFIG_DIRECTORY).resolve(CONFIG_FILE_NAME);
+        return !Files.exists(config) && Files.isRegularFile(legacyConfig) ? legacyConfig : config;
     }
 
-    /** Resolves the history file beside the running JAR, with an IDE-friendly fallback. */
+    /**
+     * Resolves the history file beside the running JAR, with an IDE-friendly
+     * fallback.
+     */
     private Path getHistoryPath() {
         try {
             if (UX.class.getProtectionDomain().getCodeSource() != null) {
@@ -611,7 +762,10 @@ public final class UX {
         }
         return fallbackDirectory.normalize().resolve(HISTORY_FILE_NAME);
     }
-    /** Immutable snapshot passed from the Swing event thread to the signing worker. */
+
+    /**
+     * 从界面线程传递给签名线程的不可变参数快照。
+     */
     private static final class SigningRequest {
         private final Path inputPath;
         private final Path outputPath;
@@ -622,10 +776,11 @@ public final class UX {
         private final String keyPassword;
         private final String keyAlias;
         private final String originalProgressText;
+        private final String applicationPackageName;
 
         private SigningRequest(Path inputPath, Path outputPath, Path keyStorePath, Path channelListPath,
-                               String inputFileName, String keyStorePassword, String keyPassword,
-                               String keyAlias, String originalProgressText) {
+                String inputFileName, String keyStorePassword, String keyPassword,
+                String keyAlias, String originalProgressText, String applicationPackageName) {
             this.inputPath = inputPath;
             this.outputPath = outputPath;
             this.keyStorePath = keyStorePath;
@@ -635,16 +790,18 @@ public final class UX {
             this.keyPassword = keyPassword;
             this.keyAlias = keyAlias;
             this.originalProgressText = originalProgressText;
+            this.applicationPackageName = applicationPackageName;
         }
 
         private boolean hasChannelList() {
             return channelListPath != null;
         }
     }
+
     {
-// GUI initializer generated by IntelliJ IDEA GUI Designer
-// >>> IMPORTANT!! <<<
-// DO NOT EDIT OR ADD ANY CODE HERE!
+        // GUI initializer generated by IntelliJ IDEA GUI Designer
+        // >>> IMPORTANT!! <<<
+        // DO NOT EDIT OR ADD ANY CODE HERE!
         $$$setupUI$$$();
     }
 
@@ -657,93 +814,159 @@ public final class UX {
      */
     private void $$$setupUI$$$() {
         topPanel = new JPanel();
-        topPanel.setLayout(new GridLayoutManager(4, 1, new Insets(5, 5, 5, 5), -1, -1));
+        topPanel.setLayout(new GridLayoutManager(3, 1, new Insets(5, 5, 5, 5), -1, -1));
         tabbedPane1 = new JTabbedPane();
-        topPanel.add(tabbedPane1, new GridConstraints(0, 0, 1, 1, GridConstraints.ANCHOR_CENTER, GridConstraints.FILL_BOTH, GridConstraints.SIZEPOLICY_CAN_SHRINK | GridConstraints.SIZEPOLICY_CAN_GROW, GridConstraints.SIZEPOLICY_CAN_SHRINK | GridConstraints.SIZEPOLICY_CAN_GROW, null, new Dimension(200, 200), null, 0, false));
+        topPanel.add(tabbedPane1,
+                new GridConstraints(0, 0, 1, 1, GridConstraints.ANCHOR_CENTER, GridConstraints.FILL_BOTH,
+                        GridConstraints.SIZEPOLICY_CAN_SHRINK | GridConstraints.SIZEPOLICY_CAN_GROW,
+                        GridConstraints.SIZEPOLICY_CAN_SHRINK | GridConstraints.SIZEPOLICY_CAN_GROW, null,
+                        new Dimension(200, 200), null, 0, false));
         final JPanel panel1 = new JPanel();
         panel1.setLayout(new GridLayoutManager(6, 3, new Insets(0, 0, 0, 0), -1, -1));
         tabbedPane1.addTab("Apk签名 & 多渠道", panel1);
         inPathTF = new JTextField();
         inPathTF.setEditable(false);
         inPathTF.setText("");
-        panel1.add(inPathTF, new GridConstraints(0, 1, 1, 1, GridConstraints.ANCHOR_WEST, GridConstraints.FILL_HORIZONTAL, GridConstraints.SIZEPOLICY_WANT_GROW, GridConstraints.SIZEPOLICY_FIXED, null, new Dimension(150, -1), null, 0, false));
+        panel1.add(inPathTF,
+                new GridConstraints(0, 1, 1, 1, GridConstraints.ANCHOR_WEST, GridConstraints.FILL_HORIZONTAL,
+                        GridConstraints.SIZEPOLICY_WANT_GROW, GridConstraints.SIZEPOLICY_FIXED, null,
+                        new Dimension(150, -1), null, 0, false));
         ksPathTF = new JTextField();
-        panel1.add(ksPathTF, new GridConstraints(1, 1, 1, 1, GridConstraints.ANCHOR_WEST, GridConstraints.FILL_HORIZONTAL, GridConstraints.SIZEPOLICY_WANT_GROW, GridConstraints.SIZEPOLICY_FIXED, null, new Dimension(150, -1), null, 0, false));
+        panel1.add(ksPathTF,
+                new GridConstraints(1, 1, 1, 1, GridConstraints.ANCHOR_WEST, GridConstraints.FILL_HORIZONTAL,
+                        GridConstraints.SIZEPOLICY_WANT_GROW, GridConstraints.SIZEPOLICY_FIXED, null,
+                        new Dimension(150, -1), null, 0, false));
         final JLabel label1 = new JLabel();
         label1.setText("输入apk/aab");
-        panel1.add(label1, new GridConstraints(0, 0, 1, 1, GridConstraints.ANCHOR_EAST, GridConstraints.FILL_NONE, GridConstraints.SIZEPOLICY_FIXED, GridConstraints.SIZEPOLICY_FIXED, null, null, null, 0, false));
+        panel1.add(label1, new GridConstraints(0, 0, 1, 1, GridConstraints.ANCHOR_EAST, GridConstraints.FILL_NONE,
+                GridConstraints.SIZEPOLICY_FIXED, GridConstraints.SIZEPOLICY_FIXED, null, null, null, 0, false));
         inBtn = new JButton();
         inBtn.setText("1.选择输入APK");
-        panel1.add(inBtn, new GridConstraints(0, 2, 1, 1, GridConstraints.ANCHOR_CENTER, GridConstraints.FILL_NONE, GridConstraints.SIZEPOLICY_CAN_SHRINK | GridConstraints.SIZEPOLICY_CAN_GROW, GridConstraints.SIZEPOLICY_FIXED, null, null, null, 0, false));
+        panel1.add(inBtn,
+                new GridConstraints(0, 2, 1, 1, GridConstraints.ANCHOR_CENTER, GridConstraints.FILL_NONE,
+                        GridConstraints.SIZEPOLICY_CAN_SHRINK | GridConstraints.SIZEPOLICY_CAN_GROW,
+                        GridConstraints.SIZEPOLICY_FIXED, null, null, null, 0, false));
         final JLabel label2 = new JLabel();
         label2.setText("KeyStore");
-        panel1.add(label2, new GridConstraints(1, 0, 1, 1, GridConstraints.ANCHOR_EAST, GridConstraints.FILL_NONE, GridConstraints.SIZEPOLICY_FIXED, GridConstraints.SIZEPOLICY_FIXED, null, null, null, 0, false));
+        panel1.add(label2, new GridConstraints(1, 0, 1, 1, GridConstraints.ANCHOR_EAST, GridConstraints.FILL_NONE,
+                GridConstraints.SIZEPOLICY_FIXED, GridConstraints.SIZEPOLICY_FIXED, null, null, null, 0, false));
         ksBtn = new JButton();
         ksBtn.setText("2.选择KeyStore");
-        panel1.add(ksBtn, new GridConstraints(1, 2, 1, 1, GridConstraints.ANCHOR_CENTER, GridConstraints.FILL_NONE, GridConstraints.SIZEPOLICY_CAN_SHRINK | GridConstraints.SIZEPOLICY_CAN_GROW, GridConstraints.SIZEPOLICY_FIXED, null, null, null, 0, false));
+        panel1.add(ksBtn,
+                new GridConstraints(1, 2, 1, 1, GridConstraints.ANCHOR_CENTER, GridConstraints.FILL_NONE,
+                        GridConstraints.SIZEPOLICY_CAN_SHRINK | GridConstraints.SIZEPOLICY_CAN_GROW,
+                        GridConstraints.SIZEPOLICY_FIXED, null, null, null, 0, false));
         final JLabel label3 = new JLabel();
         label3.setText("KeyStore密码");
-        panel1.add(label3, new GridConstraints(2, 0, 1, 1, GridConstraints.ANCHOR_EAST, GridConstraints.FILL_NONE, GridConstraints.SIZEPOLICY_FIXED, GridConstraints.SIZEPOLICY_FIXED, null, null, null, 0, false));
+        panel1.add(label3, new GridConstraints(2, 0, 1, 1, GridConstraints.ANCHOR_EAST, GridConstraints.FILL_NONE,
+                GridConstraints.SIZEPOLICY_FIXED, GridConstraints.SIZEPOLICY_FIXED, null, null, null, 0, false));
         final JLabel label4 = new JLabel();
         label4.setText("3.输入KeyStore密码");
-        panel1.add(label4, new GridConstraints(2, 2, 1, 1, GridConstraints.ANCHOR_CENTER, GridConstraints.FILL_NONE, GridConstraints.SIZEPOLICY_FIXED, GridConstraints.SIZEPOLICY_FIXED, null, null, null, 0, false));
+        panel1.add(label4, new GridConstraints(2, 2, 1, 1, GridConstraints.ANCHOR_CENTER, GridConstraints.FILL_NONE,
+                GridConstraints.SIZEPOLICY_FIXED, GridConstraints.SIZEPOLICY_FIXED, null, null, null, 0, false));
         outPathTF = new JTextField();
-        panel1.add(outPathTF, new GridConstraints(4, 1, 1, 1, GridConstraints.ANCHOR_WEST, GridConstraints.FILL_HORIZONTAL, GridConstraints.SIZEPOLICY_WANT_GROW, GridConstraints.SIZEPOLICY_FIXED, null, new Dimension(150, -1), null, 0, false));
+        panel1.add(outPathTF,
+                new GridConstraints(4, 1, 1, 1, GridConstraints.ANCHOR_WEST, GridConstraints.FILL_HORIZONTAL,
+                        GridConstraints.SIZEPOLICY_WANT_GROW, GridConstraints.SIZEPOLICY_FIXED, null,
+                        new Dimension(150, -1), null, 0, false));
         final JLabel label5 = new JLabel();
         label5.setText("输出apk/aab");
-        panel1.add(label5, new GridConstraints(4, 0, 1, 1, GridConstraints.ANCHOR_EAST, GridConstraints.FILL_NONE, GridConstraints.SIZEPOLICY_FIXED, GridConstraints.SIZEPOLICY_FIXED, null, null, null, 0, false));
+        panel1.add(label5, new GridConstraints(4, 0, 1, 1, GridConstraints.ANCHOR_EAST, GridConstraints.FILL_NONE,
+                GridConstraints.SIZEPOLICY_FIXED, GridConstraints.SIZEPOLICY_FIXED, null, null, null, 0, false));
         savePwCheckBox = new JCheckBox();
         savePwCheckBox.setSelected(true);
         savePwCheckBox.setText("保存密码");
-        panel1.add(savePwCheckBox, new GridConstraints(3, 1, 1, 1, GridConstraints.ANCHOR_WEST, GridConstraints.FILL_NONE, GridConstraints.SIZEPOLICY_CAN_SHRINK | GridConstraints.SIZEPOLICY_CAN_GROW, GridConstraints.SIZEPOLICY_FIXED, null, null, null, 0, false));
+        panel1.add(savePwCheckBox,
+                new GridConstraints(3, 1, 1, 1, GridConstraints.ANCHOR_WEST, GridConstraints.FILL_NONE,
+                        GridConstraints.SIZEPOLICY_CAN_SHRINK | GridConstraints.SIZEPOLICY_CAN_GROW,
+                        GridConstraints.SIZEPOLICY_FIXED, null, null, null, 0, false));
         ksPassPF = new JPasswordField();
-        panel1.add(ksPassPF, new GridConstraints(2, 1, 1, 1, GridConstraints.ANCHOR_WEST, GridConstraints.FILL_HORIZONTAL, GridConstraints.SIZEPOLICY_WANT_GROW, GridConstraints.SIZEPOLICY_FIXED, null, new Dimension(150, -1), null, 0, false));
+        panel1.add(ksPassPF,
+                new GridConstraints(2, 1, 1, 1, GridConstraints.ANCHOR_WEST, GridConstraints.FILL_HORIZONTAL,
+                        GridConstraints.SIZEPOLICY_WANT_GROW, GridConstraints.SIZEPOLICY_FIXED, null,
+                        new Dimension(150, -1), null, 0, false));
         channelPathTF = new JTextField();
-        panel1.add(channelPathTF, new GridConstraints(5, 1, 1, 1, GridConstraints.ANCHOR_WEST, GridConstraints.FILL_HORIZONTAL, GridConstraints.SIZEPOLICY_WANT_GROW, GridConstraints.SIZEPOLICY_FIXED, null, new Dimension(150, -1), null, 0, false));
+        panel1.add(channelPathTF,
+                new GridConstraints(5, 1, 1, 1, GridConstraints.ANCHOR_WEST, GridConstraints.FILL_HORIZONTAL,
+                        GridConstraints.SIZEPOLICY_WANT_GROW, GridConstraints.SIZEPOLICY_FIXED, null,
+                        new Dimension(150, -1), null, 0, false));
         final JLabel label6 = new JLabel();
         label6.setText("渠道清单[可选]");
-        panel1.add(label6, new GridConstraints(5, 0, 1, 1, GridConstraints.ANCHOR_WEST, GridConstraints.FILL_NONE, GridConstraints.SIZEPOLICY_FIXED, GridConstraints.SIZEPOLICY_FIXED, null, null, null, 0, false));
+        panel1.add(label6, new GridConstraints(5, 0, 1, 1, GridConstraints.ANCHOR_WEST, GridConstraints.FILL_NONE,
+                GridConstraints.SIZEPOLICY_FIXED, GridConstraints.SIZEPOLICY_FIXED, null, null, null, 0, false));
         channelBtn = new JButton();
         channelBtn.setText("选择渠道清单");
-        panel1.add(channelBtn, new GridConstraints(5, 2, 1, 1, GridConstraints.ANCHOR_CENTER, GridConstraints.FILL_HORIZONTAL, GridConstraints.SIZEPOLICY_CAN_SHRINK | GridConstraints.SIZEPOLICY_CAN_GROW, GridConstraints.SIZEPOLICY_FIXED, null, null, null, 0, false));
+        panel1.add(channelBtn,
+                new GridConstraints(5, 2, 1, 1, GridConstraints.ANCHOR_CENTER, GridConstraints.FILL_HORIZONTAL,
+                        GridConstraints.SIZEPOLICY_CAN_SHRINK | GridConstraints.SIZEPOLICY_CAN_GROW,
+                        GridConstraints.SIZEPOLICY_FIXED, null, null, null, 0, false));
         final JPanel panel2 = new JPanel();
         panel2.setLayout(new GridLayoutManager(4, 4, new Insets(0, 0, 0, 0), -1, -1));
         tabbedPane1.addTab("高级", panel2);
         keyAliasCB = new JComboBox<>();
-        panel2.add(keyAliasCB, new GridConstraints(1, 1, 1, 3, GridConstraints.ANCHOR_WEST, GridConstraints.FILL_HORIZONTAL, GridConstraints.SIZEPOLICY_CAN_GROW, GridConstraints.SIZEPOLICY_FIXED, null, null, null, 0, false));
+        panel2.add(keyAliasCB,
+                new GridConstraints(1, 1, 1, 3, GridConstraints.ANCHOR_WEST, GridConstraints.FILL_HORIZONTAL,
+                        GridConstraints.SIZEPOLICY_CAN_GROW, GridConstraints.SIZEPOLICY_FIXED, null, null, null, 0,
+                        false));
         final JLabel label7 = new JLabel();
         label7.setText("KeyAlias");
-        panel2.add(label7, new GridConstraints(1, 0, 1, 1, GridConstraints.ANCHOR_WEST, GridConstraints.FILL_NONE, GridConstraints.SIZEPOLICY_FIXED, GridConstraints.SIZEPOLICY_FIXED, null, null, null, 0, false));
+        panel2.add(label7, new GridConstraints(1, 0, 1, 1, GridConstraints.ANCHOR_WEST, GridConstraints.FILL_NONE,
+                GridConstraints.SIZEPOLICY_FIXED, GridConstraints.SIZEPOLICY_FIXED, null, null, null, 0, false));
         keyPassPF = new JPasswordField();
-        panel2.add(keyPassPF, new GridConstraints(2, 1, 1, 3, GridConstraints.ANCHOR_WEST, GridConstraints.FILL_HORIZONTAL, GridConstraints.SIZEPOLICY_WANT_GROW, GridConstraints.SIZEPOLICY_FIXED, null, new Dimension(150, -1), null, 0, false));
+        panel2.add(keyPassPF,
+                new GridConstraints(2, 1, 1, 3, GridConstraints.ANCHOR_WEST, GridConstraints.FILL_HORIZONTAL,
+                        GridConstraints.SIZEPOLICY_WANT_GROW, GridConstraints.SIZEPOLICY_FIXED, null,
+                        new Dimension(150, -1), null, 0, false));
         final JLabel label8 = new JLabel();
         label8.setText("证书密码");
-        panel2.add(label8, new GridConstraints(2, 0, 1, 1, GridConstraints.ANCHOR_WEST, GridConstraints.FILL_NONE, GridConstraints.SIZEPOLICY_FIXED, GridConstraints.SIZEPOLICY_FIXED, null, null, null, 0, false));
+        panel2.add(label8, new GridConstraints(2, 0, 1, 1, GridConstraints.ANCHOR_WEST, GridConstraints.FILL_NONE,
+                GridConstraints.SIZEPOLICY_FIXED, GridConstraints.SIZEPOLICY_FIXED, null, null, null, 0, false));
         final JLabel label9 = new JLabel();
-        label9.setText("如果您的Keystore包含多个证书，或者您的证书密码与Keystore密码不同, 请设置下列参数");
-        panel2.add(label9, new GridConstraints(0, 1, 1, 2, GridConstraints.ANCHOR_WEST, GridConstraints.FILL_NONE, GridConstraints.SIZEPOLICY_FIXED, GridConstraints.SIZEPOLICY_FIXED, null, null, null, 0, false));
+        label9.setText("<html>如果 KeyStore 包含多个证书，<br>或证书密码与 KeyStore 密码不同，请设置下列参数。</html>");
+        panel2.add(label9, new GridConstraints(0, 1, 1, 2, GridConstraints.ANCHOR_WEST, GridConstraints.FILL_NONE,
+                GridConstraints.SIZEPOLICY_FIXED, GridConstraints.SIZEPOLICY_FIXED, null, null, null, 0, false));
         v2SigningEnabledCheckBox = new JCheckBox();
         v2SigningEnabledCheckBox.setEnabled(false);
         v2SigningEnabledCheckBox.setSelected(true);
         v2SigningEnabledCheckBox.setText("--v2-signing-enabled");
-        panel2.add(v2SigningEnabledCheckBox, new GridConstraints(3, 2, 1, 1, GridConstraints.ANCHOR_WEST, GridConstraints.FILL_NONE, GridConstraints.SIZEPOLICY_CAN_SHRINK | GridConstraints.SIZEPOLICY_CAN_GROW, GridConstraints.SIZEPOLICY_FIXED, null, null, null, 0, false));
+        panel2.add(v2SigningEnabledCheckBox,
+                new GridConstraints(3, 2, 1, 1, GridConstraints.ANCHOR_WEST, GridConstraints.FILL_NONE,
+                        GridConstraints.SIZEPOLICY_CAN_SHRINK | GridConstraints.SIZEPOLICY_CAN_GROW,
+                        GridConstraints.SIZEPOLICY_FIXED, null, null, null, 0, false));
         v1SigningEnabledCheckBox = new JCheckBox();
         v1SigningEnabledCheckBox.setEnabled(false);
         v1SigningEnabledCheckBox.setSelected(true);
         v1SigningEnabledCheckBox.setText("--v1-signing-enabled");
-        panel2.add(v1SigningEnabledCheckBox, new GridConstraints(3, 1, 1, 1, GridConstraints.ANCHOR_WEST, GridConstraints.FILL_NONE, GridConstraints.SIZEPOLICY_CAN_SHRINK | GridConstraints.SIZEPOLICY_CAN_GROW, GridConstraints.SIZEPOLICY_FIXED, null, null, null, 0, false));
+        panel2.add(v1SigningEnabledCheckBox,
+                new GridConstraints(3, 1, 1, 1, GridConstraints.ANCHOR_WEST, GridConstraints.FILL_NONE,
+                        GridConstraints.SIZEPOLICY_CAN_SHRINK | GridConstraints.SIZEPOLICY_CAN_GROW,
+                        GridConstraints.SIZEPOLICY_FIXED, null, null, null, 0, false));
         final JPanel panel3 = new JPanel();
         panel3.setLayout(new GridLayoutManager(1, 2, new Insets(0, 0, 0, 0), -1, -1));
-        topPanel.add(panel3, new GridConstraints(1, 0, 1, 1, GridConstraints.ANCHOR_CENTER, GridConstraints.FILL_BOTH, GridConstraints.SIZEPOLICY_CAN_SHRINK | GridConstraints.SIZEPOLICY_CAN_GROW, GridConstraints.SIZEPOLICY_CAN_SHRINK | GridConstraints.SIZEPOLICY_CAN_GROW, null, null, null, 0, false));
+        topPanel.add(panel3,
+                new GridConstraints(1, 0, 1, 1, GridConstraints.ANCHOR_CENTER, GridConstraints.FILL_BOTH,
+                        GridConstraints.SIZEPOLICY_CAN_SHRINK | GridConstraints.SIZEPOLICY_CAN_GROW,
+                        GridConstraints.SIZEPOLICY_CAN_SHRINK | GridConstraints.SIZEPOLICY_CAN_GROW, null, null, null,
+                        0, false));
         signBtn = new JButton();
         signBtn.setText("         4.签名         ");
-        panel3.add(signBtn, new GridConstraints(0, 1, 1, 1, GridConstraints.ANCHOR_CENTER, GridConstraints.FILL_NONE, GridConstraints.SIZEPOLICY_CAN_SHRINK | GridConstraints.SIZEPOLICY_CAN_GROW, GridConstraints.SIZEPOLICY_FIXED, null, null, null, 0, false));
+        panel3.add(signBtn,
+                new GridConstraints(0, 1, 1, 1, GridConstraints.ANCHOR_CENTER, GridConstraints.FILL_NONE,
+                        GridConstraints.SIZEPOLICY_CAN_SHRINK | GridConstraints.SIZEPOLICY_CAN_GROW,
+                        GridConstraints.SIZEPOLICY_FIXED, null, null, null, 0, false));
         progressBar1 = new JProgressBar();
         progressBar1.setString("点击\"4.签名\"按钮开始  >>>>");
         progressBar1.setStringPainted(true);
-        panel3.add(progressBar1, new GridConstraints(0, 0, 1, 1, GridConstraints.ANCHOR_CENTER, GridConstraints.FILL_HORIZONTAL, GridConstraints.SIZEPOLICY_WANT_GROW, GridConstraints.SIZEPOLICY_FIXED, null, null, null, 0, false));
+        panel3.add(progressBar1,
+                new GridConstraints(0, 0, 1, 1, GridConstraints.ANCHOR_CENTER, GridConstraints.FILL_HORIZONTAL,
+                        GridConstraints.SIZEPOLICY_WANT_GROW, GridConstraints.SIZEPOLICY_FIXED, null, null, null, 0,
+                        false));
         final JScrollPane scrollPane1 = new JScrollPane();
-        topPanel.add(scrollPane1, new GridConstraints(2, 0, 1, 1, GridConstraints.ANCHOR_CENTER, GridConstraints.FILL_BOTH, GridConstraints.SIZEPOLICY_CAN_SHRINK | GridConstraints.SIZEPOLICY_WANT_GROW, GridConstraints.SIZEPOLICY_CAN_SHRINK | GridConstraints.SIZEPOLICY_WANT_GROW, null, null, null, 0, false));
+        topPanel.add(scrollPane1,
+                new GridConstraints(2, 0, 1, 1, GridConstraints.ANCHOR_CENTER, GridConstraints.FILL_BOTH,
+                        GridConstraints.SIZEPOLICY_CAN_SHRINK | GridConstraints.SIZEPOLICY_WANT_GROW,
+                        GridConstraints.SIZEPOLICY_CAN_SHRINK | GridConstraints.SIZEPOLICY_WANT_GROW, null, null, null,
+                        0, false));
         scrollPane1.setBorder(BorderFactory.createTitledBorder("运行日志"));
         loggingTA = new JTextArea();
         loggingTA.setDoubleBuffered(true);
@@ -752,13 +975,6 @@ public final class UX {
         loggingTA.setLineWrap(true);
         loggingTA.setText("   点击“4.签名”按钮开始签名...");
         scrollPane1.setViewportView(loggingTA);
-        final JScrollPane scrollPane2 = new JScrollPane();
-        topPanel.add(scrollPane2, new GridConstraints(3, 0, 1, 1, GridConstraints.ANCHOR_CENTER, GridConstraints.FILL_BOTH, GridConstraints.SIZEPOLICY_CAN_SHRINK | GridConstraints.SIZEPOLICY_WANT_GROW, GridConstraints.SIZEPOLICY_CAN_SHRINK | GridConstraints.SIZEPOLICY_WANT_GROW, null, new Dimension(200, 120), null, 0, false));
-        scrollPane2.setBorder(BorderFactory.createTitledBorder("签名历史"));
-        historyTA = new JTextArea();
-        historyTA.setEditable(false);
-        historyTA.setLineWrap(false);
-        scrollPane2.setViewportView(historyTA);
         label1.setLabelFor(inPathTF);
         label2.setLabelFor(ksPathTF);
         label3.setLabelFor(ksPassPF);
@@ -774,11 +990,11 @@ public final class UX {
      * 优化风格
      */
     private void fixFontStyle() {
-        FontUIResource defaultFont = new FontUIResource(Font.SERIF, Font.BOLD, 24);
+        FontUIResource defaultFont = new FontUIResource(Font.SANS_SERIF, Font.PLAIN, 18);
         setComponentFont(topPanel, defaultFont);
 
         int iconSize = 32;
-        //选择器的字体
+        // 选择器的字体
         UIManager.put("FileChooser.listFont", new Font(Font.SERIF, Font.PLAIN, 26));
         // 设置文件选择器的文件图标大小
         updateIconSize("FileView.directoryIcon", iconSize);

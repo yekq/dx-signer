@@ -44,3 +44,23 @@ task fatJar(type: Jar) {
     }
     with jar
 }
+
+task verifyProjectConfiguration(type: JavaExec, dependsOn: testClasses) {
+    classpath = sourceSets.test.runtimeClasspath
+    main = 'dx.signer.ProjectConfigStoreTest'
+    jvmArgs '-Dfile.encoding=UTF-8'
+}
+
+task verifyApkPackage(type: JavaExec, dependsOn: testClasses) {
+    classpath = sourceSets.test.runtimeClasspath
+    main = 'dx.signer.ApkPackageReaderTest'
+    jvmArgs '-Dfile.encoding=UTF-8'
+}
+
+task verifyProjectSelection(type: JavaExec, dependsOn: testClasses) {
+    classpath = sourceSets.test.runtimeClasspath
+    main = 'dx.signer.UXProjectSelectionTest'
+    jvmArgs '-Dfile.encoding=UTF-8', '-Djava.awt.headless=true'
+}
+
+check.dependsOn verifyProjectConfiguration, verifyApkPackage, verifyProjectSelection
