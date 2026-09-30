@@ -28,6 +28,8 @@ import java.nio.file.Paths;
 import java.util.List;
 import java.util.Properties;
 
+import dx.channel.SigningOptions;
+
 public class CommandLine {
     public static void main(String... args) throws IOException {
         System.setProperty(SimpleLogger.SHOW_LOG_NAME_KEY, "false");
@@ -45,6 +47,8 @@ public class CommandLine {
                     throw new RuntimeException("请指定参数" + k);
                 }
             }
+            SigningOptions.fromProperties(p).validate(SignWorker.isAab(Paths.get(p.getProperty("in"))),
+                    !p.getProperty("channel-list", "").isEmpty());
         } catch (Exception e) {
             log.error("参数解析失败：{}", e.getMessage());
             System.err.println("用法：java -jar dx-signer.jar sign [--option value]*");
@@ -58,6 +62,10 @@ public class CommandLine {
             System.err.println("    --ks-key-alias");
             System.err.println("    --key-pass");
             System.err.println("    --channel-list 渠道清单");
+            System.err.println("    --v1-signing-enabled true|false（默认 true）");
+            System.err.println("    --v2-signing-enabled true|false（默认 true）");
+            System.err.println("    --v3-signing-enabled true|false（默认 false）");
+            System.err.println("    --v4-signing-enabled true|false（默认 false，生成 .apk.idsig）");
             System.exit(3);
         }
         Path input = Paths.get(p.getProperty("in"));
@@ -67,13 +75,14 @@ public class CommandLine {
         String ksKeyAlias = p.getProperty("ks-key-alias", "");
         String keyPass = p.getProperty("key-pass", "");
         String applicationPackageName = p.getProperty("applicationPackageName", "");
+        SigningOptions signingOptions = SigningOptions.fromProperties(p);
         if (p.getProperty("channel-list", "").length() > 0) {
             Path out = detectOutDir(p.getProperty("out"));
 
             int result = SignWorker.signChannelApk(input, p.getProperty("in-filename", ""),
                     out,
                     Paths.get(p.getProperty("channel-list")),
-                    ks, ksPass, ksKeyAlias, keyPass, applicationPackageName);
+                    ks, ksPass, ksKeyAlias, keyPass, applicationPackageName, signingOptions, null);
 
             if (result != 0) {
                 log.error("多渠道失败");
@@ -82,7 +91,7 @@ public class CommandLine {
         } else {
             Path out = Paths.get(p.getProperty("out"));
             int result = SignWorker.signApk(input, out, ks,
-                    ksPass, ksKeyAlias, keyPass, applicationPackageName);
+                    ksPass, ksKeyAlias, keyPass, applicationPackageName, signingOptions);
 
             if (result != 0) {
                 log.error("签名失败");

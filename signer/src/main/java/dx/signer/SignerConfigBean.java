@@ -2,6 +2,8 @@ package dx.signer;
 
 import java.util.Properties;
 
+import dx.channel.SigningOptions;
+
 /**
  * create by yekangqi
  * <hr>
@@ -21,6 +23,7 @@ public class SignerConfigBean {
     private String channelList = "";
     private String keyPass = "";
     private String ks = "";
+    private SigningOptions signingOptions = SigningOptions.DEFAULT;
     private final Properties additionalProperties = new Properties();
 
     public SignerConfigBean() {
@@ -28,6 +31,7 @@ public class SignerConfigBean {
 
     public SignerConfigBean(Properties initConfig) {
         additionalProperties.putAll(initConfig);
+        signingOptions = SigningOptions.fromProperties(initConfig);
         setProjectName(initConfig.getProperty("projectName", ""));
         setApplicationPackageName(initConfig.getProperty("applicationPackageName", ""));
         boolean readOnly = "true".equals(initConfig.getProperty("config-read-only", ""));
@@ -66,7 +70,16 @@ public class SignerConfigBean {
         properties.setProperty("key-pass", keyPass);
         properties.setProperty("ks-key-alias", ksKeyAlias);
         properties.setProperty("channel-list", channelList);
+        signingOptions.writeTo(properties);
         return properties;
+    }
+
+    public SigningOptions getSigningOptions() {
+        return signingOptions;
+    }
+
+    public void setSigningOptions(SigningOptions signingOptions) {
+        this.signingOptions = java.util.Objects.requireNonNull(signingOptions);
     }
 
     public String getProjectName() {

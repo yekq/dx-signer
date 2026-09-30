@@ -19,14 +19,6 @@ package dx.channel;
 
 import com.meituan.android.walle.ChannelWriter;
 import com.meituan.android.walle.SignatureNotFoundException;
-import dx.zip.AxmlFastZipOut;
-import dx.zip.FastZipEntry;
-import dx.zip.FastZipIn;
-import dx.zip.Source;
-import pxb.android.Res_value;
-import pxb.android.axml.Axml;
-import pxb.android.axml.NodeVisitor;
-import pxb.android.axml.R;
 
 import java.io.IOException;
 import java.nio.ByteBuffer;
@@ -39,6 +31,15 @@ import java.util.List;
 import java.util.Optional;
 import java.util.stream.Collectors;
 import java.util.zip.DataFormatException;
+
+import dx.zip.AxmlFastZipOut;
+import dx.zip.FastZipEntry;
+import dx.zip.FastZipIn;
+import dx.zip.Source;
+import pxb.android.Res_value;
+import pxb.android.axml.Axml;
+import pxb.android.axml.NodeVisitor;
+import pxb.android.axml.R;
 
 public class ChannelBuilder implements AutoCloseable {
     private static final String Android_NS = "http://schemas.android.com/apk/res/android";
@@ -109,11 +110,17 @@ public class ChannelBuilder implements AutoCloseable {
     }
 
     public void build(String channel, Path out) throws IOException {
+        build(channel, out, SigningOptions.DEFAULT);
+    }
+
+    public void build(String channel, Path out, SigningOptions options) throws IOException {
+        options.validate(false, true);
         out = out.toAbsolutePath();
         Path parent = out.getParent();
         Files.createDirectories(parent);
         Path tmp = Files.createTempFile(parent, "tmp", ".apk");
         Files.deleteIfExists(out);
+        Files.deleteIfExists(ApkSigns.v4SignaturePath(out));
         try {
             try (AxmlFastZipOut zout = new AxmlFastZipOut(tmp.toFile());) {
                 zout.initByAndroidManifestContent(axml);
@@ -125,11 +132,14 @@ public class ChannelBuilder implements AutoCloseable {
                 zout.copyEnd();
             }
 
-            ApkSigns.sign(tmp, out, this.key, false);
+            ApkSigns.sign(tmp, out, this.key, false, options.withoutV4());
             try {
                 ChannelWriter.put(out.toFile(), channel);
             } catch (SignatureNotFoundException e) {
                 throw new IOException(e);
+            }
+            if (options.isV4Enabled()) {
+                ApkSigns.writeV4Signature(out, key, options);
             }
         } finally {
             Files.deleteIfExists(tmp);

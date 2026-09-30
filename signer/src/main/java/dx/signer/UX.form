@@ -156,7 +156,7 @@
               </component>
             </children>
           </grid>
-          <grid id="146f6" layout-manager="GridLayoutManager" row-count="4" column-count="4" same-size-horizontally="false" same-size-vertically="false" hgap="-1" vgap="-1">
+          <grid id="146f6" layout-manager="GridLayoutManager" row-count="6" column-count="4" same-size-horizontally="false" same-size-vertically="false" hgap="-1" vgap="-1">
             <margin top="0" left="0" bottom="0" right="0"/>
             <constraints>
               <tabbedpane title="高级"/>
@@ -209,7 +209,6 @@
                   <grid row="3" column="2" row-span="1" col-span="1" vsize-policy="0" hsize-policy="3" anchor="8" fill="0" indent="0" use-parent-layout="false"/>
                 </constraints>
                 <properties>
-                  <enabled value="false"/>
                   <selected value="true"/>
                   <text value="--v2-signing-enabled"/>
                 </properties>
@@ -219,9 +218,34 @@
                   <grid row="3" column="1" row-span="1" col-span="1" vsize-policy="0" hsize-policy="3" anchor="8" fill="0" indent="0" use-parent-layout="false"/>
                 </constraints>
                 <properties>
-                  <enabled value="false"/>
                   <selected value="true"/>
                   <text value="--v1-signing-enabled"/>
+                </properties>
+              </component>
+              <component id="signv3" class="javax.swing.JCheckBox" binding="v3SigningEnabledCheckBox">
+                <constraints>
+                  <grid row="4" column="1" row-span="1" col-span="1" vsize-policy="0" hsize-policy="3" anchor="8" fill="0" indent="0" use-parent-layout="false"/>
+                </constraints>
+                <properties>
+                  <text value="--v3-signing-enabled"/>
+                  <toolTipText value="APK V3 签名，Android 9 及以上支持"/>
+                </properties>
+              </component>
+              <component id="signv4" class="javax.swing.JCheckBox" binding="v4SigningEnabledCheckBox">
+                <constraints>
+                  <grid row="4" column="2" row-span="1" col-span="1" vsize-policy="0" hsize-policy="3" anchor="8" fill="0" indent="0" use-parent-layout="false"/>
+                </constraints>
+                <properties>
+                  <text value="--v4-signing-enabled"/>
+                  <toolTipText value="用于增量安装，生成配套 .apk.idsig；必须同时启用 V2 或 V3"/>
+                </properties>
+              </component>
+              <component id="signhelp" class="javax.swing.JLabel">
+                <constraints>
+                  <grid row="5" column="1" row-span="1" col-span="3" vsize-policy="0" hsize-policy="3" anchor="8" fill="1" indent="0" use-parent-layout="false"/>
+                </constraints>
+                <properties>
+                  <text value="&lt;html&gt;V4 生成配套 .apk.idsig，需同时启用 V2 或 V3。&lt;br&gt;多渠道需要 V2；AAB 请保留 V1，并关闭 V3/V4。&lt;/html&gt;"/>
                 </properties>
               </component>
             </children>

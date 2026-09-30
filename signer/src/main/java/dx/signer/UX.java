@@ -22,12 +22,12 @@ import com.intellij.uiDesigner.core.GridLayoutManager;
 
 import org.slf4j.impl.SimpleLogger;
 
-import java.awt.Component;
 import java.awt.BorderLayout;
 import java.awt.Color;
-import java.awt.FlowLayout;
+import java.awt.Component;
 import java.awt.Container;
 import java.awt.Dimension;
+import java.awt.FlowLayout;
 import java.awt.Font;
 import java.awt.Image;
 import java.awt.Insets;
@@ -75,6 +75,7 @@ import javax.swing.plaf.FontUIResource;
 import javax.swing.text.DefaultCaret;
 
 import dx.channel.ApkSigns;
+import dx.channel.SigningOptions;
 
 public final class UX {
     private static final String AUTO_KEY_ALIAS = "{{auto}}";
@@ -103,6 +104,8 @@ public final class UX {
     private JButton channelBtn;
     private JCheckBox v1SigningEnabledCheckBox;
     private JCheckBox v2SigningEnabledCheckBox;
+    private JCheckBox v3SigningEnabledCheckBox;
+    private JCheckBox v4SigningEnabledCheckBox;
 
     private boolean readOnly = false;
     private String inputFileName = "";
@@ -331,6 +334,10 @@ public final class UX {
         keyAliasCB.setEnabled(editable);
         ksPassPF.setEnabled(editable);
         keyPassPF.setEnabled(editable);
+        v1SigningEnabledCheckBox.setEnabled(editable);
+        v2SigningEnabledCheckBox.setEnabled(editable);
+        v3SigningEnabledCheckBox.setEnabled(editable);
+        v4SigningEnabledCheckBox.setEnabled(editable);
         projectSelector.setEnabled(!signingBusy);
     }
 
@@ -468,10 +475,14 @@ public final class UX {
         String keyPassword = new String(keyPassPF.getPassword());
         String selectedAlias = (String) keyAliasCB.getSelectedItem();
         String keyAlias = selectedAlias == null ? AUTO_KEY_ALIAS : selectedAlias;
+        SigningOptions signingOptions = new SigningOptions(v1SigningEnabledCheckBox.isSelected(),
+                v2SigningEnabledCheckBox.isSelected(), v3SigningEnabledCheckBox.isSelected(),
+                v4SigningEnabledCheckBox.isSelected());
+        signingOptions.validate(SignWorker.isAab(inputPath), channelListPath != null);
 
         return new SigningRequest(inputPath, outputPath, keyStorePath, channelListPath,
                 inputFileName, keyStorePassword, keyPassword, keyAlias, progressBar1.getString(),
-                activeProject.getApplicationPackageName(), activeProject.getProjectName());
+                activeProject.getApplicationPackageName(), activeProject.getProjectName(), signingOptions);
     }
 
     private boolean confirmOverwrite(SigningRequest request) {
@@ -484,9 +495,10 @@ public final class UX {
                     JOptionPane.YES_NO_OPTION);
         }
 
-        return !Files.isRegularFile(request.outputPath) || JOptionPane.YES_OPTION == JOptionPane.showConfirmDialog(
+        return !(Files.exists(request.outputPath) || Files.exists(ApkSigns.v4SignaturePath(request.outputPath)))
+                || JOptionPane.YES_OPTION == JOptionPane.showConfirmDialog(
                 topPanel,
-                "输出APK已经存在，是否覆盖:\n" + request.outputPath,
+                "输出文件或其 V4 签名已存在，是否覆盖:\n" + request.outputPath,
                 "输出APK已经存在，是否覆盖",
                 JOptionPane.YES_NO_OPTION);
     }
@@ -503,6 +515,7 @@ public final class UX {
         updated.setInFilename("");
         updated.setOut(parentPath(request.outputPath));
         updated.setChannelList(request.channelListPath == null ? "" : request.channelListPath.toString());
+        updated.setSigningOptions(request.signingOptions);
         updated.setKsPass(savePwCheckBox.isSelected() ? request.keyStorePassword : "");
         updated.setKeyPass(savePwCheckBox.isSelected() ? request.keyPassword : "");
         try {
@@ -533,7 +546,7 @@ public final class UX {
                         request.keyStorePath,
                         request.keyStorePassword,
                         request.keyAlias,
-                        request.keyPassword, request.applicationPackageName,
+                        request.keyPassword, request.applicationPackageName, request.signingOptions,
                         generatedOutputs::add);
             } else {
                 actualOutputPath = request.outputPath;
@@ -543,9 +556,12 @@ public final class UX {
                         request.keyStorePath,
                         request.keyStorePassword,
                         request.keyAlias,
-                        request.keyPassword, request.applicationPackageName);
+                        request.keyPassword, request.applicationPackageName, request.signingOptions);
                 if (result == 0) {
                     generatedOutputs.add(actualOutputPath);
+                    if (request.signingOptions.isV4Enabled()) {
+                        generatedOutputs.add(ApkSigns.v4SignaturePath(actualOutputPath));
+                    }
                 }
             }
 
@@ -578,7 +594,8 @@ public final class UX {
         }
 
         int choice = JOptionPane.showConfirmDialog(topPanel,
-                "签名成功, 输出APK\n" + outputPath,
+                "签名成功, 输出APK\n" + outputPath + (request.signingOptions.isV4Enabled()
+                        ? "\nV4 签名：" + ApkSigns.v4SignaturePath(outputPath) : ""),
                 "签名结果",
                 JOptionPane.YES_NO_OPTION);
         if (choice == JOptionPane.YES_OPTION && outputPath.toFile().getParent() != null) {
@@ -667,6 +684,7 @@ public final class UX {
         ksPassPF.setText("");
         keyPassPF.setText("");
         channelPathTF.setText("");
+        applySigningOptions(SigningOptions.DEFAULT);
         resetKeyAliasOptions();
         applyReadOnlyState();
     }
@@ -678,6 +696,7 @@ public final class UX {
         ksPassPF.setText(project.getKsPass());
         keyPassPF.setText(project.getKeyPass());
         channelPathTF.setText(project.getChannelList());
+        applySigningOptions(project.getSigningOptions());
         resetKeyAliasOptions();
         if (!project.getKsKeyAlias().isEmpty() && !AUTO_KEY_ALIAS.equals(project.getKsKeyAlias())) {
             keyAliasCB.addItem(project.getKsKeyAlias());
@@ -697,6 +716,13 @@ public final class UX {
 
     private void setInput(File file) {
         setInput(file, null);
+    }
+
+    private void applySigningOptions(SigningOptions options) {
+        v1SigningEnabledCheckBox.setSelected(options.isV1Enabled());
+        v2SigningEnabledCheckBox.setSelected(options.isV2Enabled());
+        v3SigningEnabledCheckBox.setSelected(options.isV3Enabled());
+        v4SigningEnabledCheckBox.setSelected(options.isV4Enabled());
     }
 
     private void setInput(File file, String configuredFileName) {
@@ -800,11 +826,12 @@ public final class UX {
         private final String originalProgressText;
         private final String applicationPackageName;
         private final String projectName;
+        private final SigningOptions signingOptions;
 
         private SigningRequest(Path inputPath, Path outputPath, Path keyStorePath, Path channelListPath,
                 String inputFileName, String keyStorePassword, String keyPassword,
                 String keyAlias, String originalProgressText, String applicationPackageName,
-                String projectName) {
+                               String projectName, SigningOptions signingOptions) {
             this.inputPath = inputPath;
             this.outputPath = outputPath;
             this.keyStorePath = keyStorePath;
@@ -816,6 +843,7 @@ public final class UX {
             this.originalProgressText = originalProgressText;
             this.applicationPackageName = applicationPackageName;
             this.projectName = projectName;
+            this.signingOptions = signingOptions;
         }
 
         private boolean hasChannelList() {
@@ -926,7 +954,7 @@ public final class UX {
                         GridConstraints.SIZEPOLICY_CAN_SHRINK | GridConstraints.SIZEPOLICY_CAN_GROW,
                         GridConstraints.SIZEPOLICY_FIXED, null, null, null, 0, false));
         final JPanel panel2 = new JPanel();
-        panel2.setLayout(new GridLayoutManager(4, 4, new Insets(0, 0, 0, 0), -1, -1));
+        panel2.setLayout(new GridLayoutManager(6, 4, new Insets(0, 0, 0, 0), -1, -1));
         tabbedPane1.addTab("高级", panel2);
         keyAliasCB = new JComboBox<>();
         panel2.add(keyAliasCB,
@@ -951,7 +979,6 @@ public final class UX {
         panel2.add(label9, new GridConstraints(0, 1, 1, 2, GridConstraints.ANCHOR_WEST, GridConstraints.FILL_NONE,
                 GridConstraints.SIZEPOLICY_FIXED, GridConstraints.SIZEPOLICY_FIXED, null, null, null, 0, false));
         v2SigningEnabledCheckBox = new JCheckBox();
-        v2SigningEnabledCheckBox.setEnabled(false);
         v2SigningEnabledCheckBox.setSelected(true);
         v2SigningEnabledCheckBox.setText("--v2-signing-enabled");
         panel2.add(v2SigningEnabledCheckBox,
@@ -959,11 +986,30 @@ public final class UX {
                         GridConstraints.SIZEPOLICY_CAN_SHRINK | GridConstraints.SIZEPOLICY_CAN_GROW,
                         GridConstraints.SIZEPOLICY_FIXED, null, null, null, 0, false));
         v1SigningEnabledCheckBox = new JCheckBox();
-        v1SigningEnabledCheckBox.setEnabled(false);
         v1SigningEnabledCheckBox.setSelected(true);
         v1SigningEnabledCheckBox.setText("--v1-signing-enabled");
         panel2.add(v1SigningEnabledCheckBox,
                 new GridConstraints(3, 1, 1, 1, GridConstraints.ANCHOR_WEST, GridConstraints.FILL_NONE,
+                        GridConstraints.SIZEPOLICY_CAN_SHRINK | GridConstraints.SIZEPOLICY_CAN_GROW,
+                        GridConstraints.SIZEPOLICY_FIXED, null, null, null, 0, false));
+        v3SigningEnabledCheckBox = new JCheckBox();
+        v3SigningEnabledCheckBox.setText("--v3-signing-enabled");
+        v3SigningEnabledCheckBox.setToolTipText("APK V3 签名，Android 9 及以上支持");
+        panel2.add(v3SigningEnabledCheckBox,
+                new GridConstraints(4, 1, 1, 1, GridConstraints.ANCHOR_WEST, GridConstraints.FILL_NONE,
+                        GridConstraints.SIZEPOLICY_CAN_SHRINK | GridConstraints.SIZEPOLICY_CAN_GROW,
+                        GridConstraints.SIZEPOLICY_FIXED, null, null, null, 0, false));
+        v4SigningEnabledCheckBox = new JCheckBox();
+        v4SigningEnabledCheckBox.setText("--v4-signing-enabled");
+        v4SigningEnabledCheckBox.setToolTipText("用于增量安装，生成配套 .apk.idsig；必须同时启用 V2 或 V3");
+        panel2.add(v4SigningEnabledCheckBox,
+                new GridConstraints(4, 2, 1, 1, GridConstraints.ANCHOR_WEST, GridConstraints.FILL_NONE,
+                        GridConstraints.SIZEPOLICY_CAN_SHRINK | GridConstraints.SIZEPOLICY_CAN_GROW,
+                        GridConstraints.SIZEPOLICY_FIXED, null, null, null, 0, false));
+        final JLabel signingHelp = new JLabel();
+        signingHelp.setText("<html>V4 生成配套 .apk.idsig，需同时启用 V2 或 V3。<br>多渠道需要 V2；AAB 请保留 V1，并关闭 V3/V4。</html>");
+        panel2.add(signingHelp,
+                new GridConstraints(5, 1, 1, 3, GridConstraints.ANCHOR_WEST, GridConstraints.FILL_HORIZONTAL,
                         GridConstraints.SIZEPOLICY_CAN_SHRINK | GridConstraints.SIZEPOLICY_CAN_GROW,
                         GridConstraints.SIZEPOLICY_FIXED, null, null, null, 0, false));
         final JPanel panel3 = new JPanel();

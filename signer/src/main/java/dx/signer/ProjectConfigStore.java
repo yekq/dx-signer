@@ -3,8 +3,8 @@ package dx.signer;
 import org.json.JSONArray;
 import org.json.JSONObject;
 
-import java.io.IOException;
 import java.io.File;
+import java.io.IOException;
 import java.io.StringReader;
 import java.nio.charset.StandardCharsets;
 import java.nio.file.AtomicMoveNotSupportedException;
@@ -29,7 +29,8 @@ import java.util.Set;
 final class ProjectConfigStore {
     private static final Set<String> EDITABLE_KEYS = new HashSet<>(Arrays.asList(
             "projectName", "applicationPackageName", "config-read-only", "in", "out",
-            "in-filename", "ks", "ks-pass", "key-pass", "ks-key-alias", "channel-list"));
+            "in-filename", "ks", "ks-pass", "key-pass", "ks-key-alias", "channel-list",
+            "v1-signing-enabled", "v2-signing-enabled", "v3-signing-enabled", "v4-signing-enabled"));
     private static final String[] PATH_KEYS = {"in", "out", "ks", "channel-list"};
 
     private final Path configFile;
@@ -95,6 +96,8 @@ final class ProjectConfigStore {
             if (EDITABLE_KEYS.contains(key) || !target.has(key)) {
                 if ("config-read-only".equals(key)) {
                     target.put(key, project.isReadOnly());
+                } else if (key.matches("v[1-4]-signing-enabled")) {
+                    target.put(key, Boolean.parseBoolean(properties.getProperty(key)));
                 } else {
                     target.put(key, properties.getProperty(key));
                 }
@@ -177,7 +180,9 @@ final class ProjectConfigStore {
                 continue;
             }
             Object value = item.get(key);
-            if (!(value instanceof String) && !("config-read-only".equals(key) && value instanceof Boolean)) {
+            boolean booleanField = "config-read-only".equals(key)
+                    || key.matches("v[1-4]-signing-enabled");
+            if (!(value instanceof String) && !(booleanField && value instanceof Boolean)) {
                 throw new IOException("配置字段 " + key + " 的类型无效");
             }
         }

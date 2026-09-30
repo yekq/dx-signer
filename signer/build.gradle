@@ -43,6 +43,13 @@ task fatJar(type: Jar) {
         exclude 'META-INF/maven/**'
     }
     with jar
+    doLast {
+        copy {
+            from archivePath
+            into 'D:\\'
+        }
+        logger.lifecycle("签名工具已复制" + archivePath.name)
+    }
 }
 
 task verifyProjectConfiguration(type: JavaExec, dependsOn: testClasses) {
@@ -87,5 +94,11 @@ task verifyOutputFileName(type: JavaExec, dependsOn: testClasses) {
     jvmArgs '-Dfile.encoding=UTF-8', '-Djava.awt.headless=true'
 }
 
+task verifySigningSchemes(type: JavaExec, dependsOn: testClasses) {
+    classpath = sourceSets.test.runtimeClasspath
+    main = 'dx.signer.SigningSchemesTest'
+    jvmArgs '-Dfile.encoding=UTF-8', '-Djava.awt.headless=true'
+}
+
 check.dependsOn verifyProjectConfiguration, verifyApkPackage, verifyProjectSelection,
-        verifySigningHistory, verifyFileChooser, verifyUiTheme, verifyOutputFileName
+        verifySigningHistory, verifyFileChooser, verifyUiTheme, verifyOutputFileName, verifySigningSchemes

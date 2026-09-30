@@ -18,14 +18,15 @@
 package dx.channel;
 
 import com.android.apksig.ApkSigner;
-import dx.zip.AxmlFastZipOut;
-import dx.zip.FastZipEntry;
-import dx.zip.FastZipIn;
+import com.android.apksig.DefaultApkSignerEngine;
+import com.android.apksig.util.DataSources;
+
 import org.slf4j.Logger;
 import org.slf4j.LoggerFactory;
 
 import java.io.ByteArrayInputStream;
 import java.io.IOException;
+import java.io.RandomAccessFile;
 import java.nio.ByteBuffer;
 import java.nio.file.Files;
 import java.nio.file.Path;
@@ -34,10 +35,21 @@ import java.security.KeyStoreException;
 import java.security.MessageDigest;
 import java.security.cert.Certificate;
 import java.security.cert.X509Certificate;
-import java.util.*;
+import java.util.ArrayList;
+import java.util.Arrays;
+import java.util.Collections;
+import java.util.Enumeration;
+import java.util.HashSet;
+import java.util.List;
+import java.util.Set;
+import java.util.TreeSet;
 import java.util.jar.JarFile;
 import java.util.regex.Pattern;
 import java.util.zip.DataFormatException;
+
+import dx.zip.AxmlFastZipOut;
+import dx.zip.FastZipEntry;
+import dx.zip.FastZipIn;
 
 public class ApkSigns {
     private static final Logger log = LoggerFactory.getLogger(ApkSigns.class);
@@ -232,6 +244,14 @@ public class ApkSigns {
     }
 
     public static void sign(Path in, Path out, KeyStore.PrivateKeyEntry key, boolean isAAB) throws IOException {
+        sign(in, out, key, isAAB, SigningOptions.DEFAULT);
+    }
+
+    public static void sign(Path in, Path out, KeyStore.PrivateKeyEntry key, boolean isAAB,
+                            SigningOptions options) throws IOException {
+        options.validate(isAAB, false);
+        // 覆盖 APK 时清除旧的伴随签名，避免留下与新 APK 不匹配的 idsig。
+        Files.deleteIfExists(v4SignaturePath(out));
         List<X509Certificate> x509Certificates = new ArrayList<>();
         for (Certificate c : key.getCertificateChain()) {
             x509Certificates.add((X509Certificate) c);
@@ -243,12 +263,13 @@ public class ApkSigns {
         ApkSigner.Builder apkSignerBuilder =
                 new ApkSigner.Builder(Collections.singletonList(signerConfig))
                         .setOtherSignersSignaturesPreserved(false)
-                        .setV3SigningEnabled(false)
+                        .setV3SigningEnabled(!isAAB && options.isV3Enabled())
+                        .setV4SigningEnabled(false)
                         .setInputApk(in.toFile())
                         .setOutputApk(out.toFile());
 
-        apkSignerBuilder.setV1SigningEnabled(true);
-        apkSignerBuilder.setV2SigningEnabled(true);
+        apkSignerBuilder.setV1SigningEnabled(options.isV1Enabled());
+        apkSignerBuilder.setV2SigningEnabled(options.isV2Enabled());
         int minSdkVersion = isAAB ? 26 : 0;
         if (minSdkVersion > 0) {
             apkSignerBuilder.setMinSdkVersion(minSdkVersion);
@@ -256,10 +277,49 @@ public class ApkSigns {
         ApkSigner signer = apkSignerBuilder.build();
         try {
             signer.sign();
+            if (options.isV4Enabled()) {
+                writeV4Signature(out, key, options);
+            }
         } catch (RuntimeException | IOException e) {
             throw e;
         } catch (Exception e) {
             throw new RuntimeException(e);
+        }
+    }
+
+    public static Path v4SignaturePath(Path apk) {
+        return apk.resolveSibling(apk.getFileName().toString() + ".idsig");
+    }
+
+    /**
+     * 基于最终 APK 字节生成 V4；多渠道必须在 Walle 写入之后调用。
+     */
+    public static void writeV4Signature(Path apk, KeyStore.PrivateKeyEntry key,
+                                        SigningOptions options) throws IOException {
+        options.validate(false, false);
+        Path signature = v4SignaturePath(apk).toAbsolutePath();
+        Path temporary = Files.createTempFile(signature.getParent(), "v4-signature-", ".idsig");
+        try {
+            List<X509Certificate> certificates = new ArrayList<>();
+            for (Certificate certificate : key.getCertificateChain()) {
+                certificates.add((X509Certificate) certificate);
+            }
+            DefaultApkSignerEngine.SignerConfig config = new DefaultApkSignerEngine.SignerConfig.Builder(
+                    "cert", key.getPrivateKey(), certificates).build();
+            // V4 面向 Android 11 及以上，独立生成签名不会更改已有 APK 签名或渠道信息。
+            try (DefaultApkSignerEngine engine = new DefaultApkSignerEngine.Builder(
+                    Collections.singletonList(config), 30)
+                    .setV1SigningEnabled(false)
+                    .setV2SigningEnabled(options.isV2Enabled())
+                    .setV3SigningEnabled(options.isV3Enabled()).build();
+                 RandomAccessFile input = new RandomAccessFile(apk.toFile(), "r")) {
+                engine.signV4(DataSources.asDataSource(input), temporary.toFile(), false);
+            }
+            Files.move(temporary, signature, java.nio.file.StandardCopyOption.REPLACE_EXISTING);
+        } catch (Exception exception) {
+            throw new IOException("生成 V4 签名失败: " + exception.getMessage(), exception);
+        } finally {
+            Files.deleteIfExists(temporary);
         }
     }
 }

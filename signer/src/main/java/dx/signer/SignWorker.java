@@ -18,8 +18,6 @@
 package dx.signer;
 
 
-import dx.channel.ApkSigns;
-import dx.channel.ChannelBuilder;
 import org.slf4j.Logger;
 import org.slf4j.LoggerFactory;
 
@@ -29,14 +27,18 @@ import java.nio.file.Path;
 import java.security.KeyStore;
 import java.util.List;
 import java.util.function.Consumer;
-import java.util.zip.DataFormatException;
+
+import dx.channel.ApkSigns;
+import dx.channel.ChannelBuilder;
+import dx.channel.SigningOptions;
 
 public class SignWorker {
     private static final Logger log = LoggerFactory.getLogger(SignWorker.class);
 
-    private static void sign(Path inApk, Path ksPath, String ksPass, String keyAlias, String keyPass, Path outApk) throws Throwable {
+    private static void sign(Path inApk, Path ksPath, String ksPass, String keyAlias, String keyPass,
+                             Path outApk, SigningOptions options) throws Throwable {
         KeyStore.PrivateKeyEntry key = ApkSigns.loadKey(ksPath, ksPass, keyAlias, keyPass);
-        ApkSigns.sign(inApk, outApk, key, inApk.getFileName().toString().endsWith("aab"));
+        ApkSigns.sign(inApk, outApk, key, isAab(inApk), options);
     }
 
     public static int signApk(Path apkUnsigned, Path apkOut, Path ksPath, String ksPass, String keyAlias, String keyPass) {
@@ -45,8 +47,16 @@ public class SignWorker {
 
     public static int signApk(Path apkUnsigned, Path apkOut, Path ksPath, String ksPass,
                               String keyAlias, String keyPass, String applicationPackageName) {
+        return signApk(apkUnsigned, apkOut, ksPath, ksPass, keyAlias, keyPass,
+                applicationPackageName, SigningOptions.DEFAULT);
+    }
+
+    public static int signApk(Path apkUnsigned, Path apkOut, Path ksPath, String ksPass,
+                              String keyAlias, String keyPass, String applicationPackageName,
+                              SigningOptions options) {
+        options.validate(isAab(apkUnsigned), false);
         Path tmp = null;
-        String suffix = apkUnsigned.getFileName().toString().endsWith("aab") ? "aab" : "apk";
+        String suffix = isAab(apkUnsigned) ? "aab" : "apk";
         try {
             Path p = apkOut.toAbsolutePath().getParent();
             if (!Files.exists(p)) {
@@ -66,11 +76,14 @@ public class SignWorker {
             log.info("{}", "<< 完成");
 
             logSigningConfiguration(ksPath, applicationPackageName);
-            sign(tmp, ksPath, ksPass, keyAlias, keyPass, apkOut);
+            sign(tmp, ksPath, ksPass, keyAlias, keyPass, apkOut, options);
             log.info("{}", "<< 完成");
 
             log.info("{}", "< 签名结束, 结果： 完成");
             log.info("  输出APK: {}", apkOut);
+            if (options.isV4Enabled()) {
+                log.info("  输出 V4 签名: {}", ApkSigns.v4SignaturePath(apkOut));
+            }
         } catch (Throwable e) {
             log.info("签名结束, 结果： 失败", e);
             return -1;
@@ -112,12 +125,24 @@ public class SignWorker {
                                      Path channelListFile, Path ksPath, String ksPass,
                                      String keyAlias, String keyPass, String applicationPackageName,
                                      Consumer<Path> onGenerated) throws IOException {
+        return signChannelApk(input, inputFileName, outDir, channelListFile,
+                ksPath, ksPass, keyAlias, keyPass, applicationPackageName,
+                SigningOptions.DEFAULT, onGenerated);
+    }
 
+    /**
+     * 将方案选项传递到每个渠道，并在 APK 和 V4 伴随文件全部生成后回调。
+     */
+    public static int signChannelApk(Path input, String inputFileName, Path outDir,
+                                     Path channelListFile, Path ksPath, String ksPass,
+                                     String keyAlias, String keyPass, String applicationPackageName,
+                                     SigningOptions options, Consumer<Path> onGenerated) throws IOException {
+        options.validate(isAab(input), true);
         if (inputFileName == null || inputFileName.trim().length() == 0) {
             inputFileName = input.getFileName().toString();
         }
         if (inputFileName.endsWith(".aab")) {
-            throw new RuntimeException("only .apk supported");
+            throw new IllegalArgumentException("多渠道仅支持 APK 文件");
         }
 
         List<String> channelList = ChannelBuilder.readChannelList(channelListFile);
@@ -140,11 +165,17 @@ public class SignWorker {
                 Path outPath = outDir.resolve(safeName);
                 log.info("正在输出渠道: {}", channel);
                 try {
-                    cb.build(channel, outPath);
+                    cb.build(channel, outPath, options);
                     if (onGenerated != null) {
                         onGenerated.accept(outPath);
+                        if (options.isV4Enabled()) {
+                            onGenerated.accept(ApkSigns.v4SignaturePath(outPath));
+                        }
                     }
                     log.info("已经生成: {}", outPath);
+                    if (options.isV4Enabled()) {
+                        log.info("已经生成 V4 签名: {}", ApkSigns.v4SignaturePath(outPath));
+                    }
                 }catch (Throwable e) {
                     log.error("多渠道失败", e);
                     return 1;
@@ -161,5 +192,9 @@ public class SignWorker {
         String packageName = applicationPackageName == null ? "" : applicationPackageName.trim();
         log.info(">> 签名 ...  {}{}", ksPath.getFileName(),
                 packageName.isEmpty() ? "" : " " + packageName);
+    }
+
+    static boolean isAab(Path input) {
+        return input.getFileName().toString().toLowerCase(java.util.Locale.ROOT).endsWith(".aab");
     }
 }
