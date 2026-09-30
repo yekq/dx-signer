@@ -81,5 +81,11 @@ task verifyUiTheme(type: JavaExec, dependsOn: testClasses) {
     jvmArgs '-Dfile.encoding=UTF-8', '-Djava.awt.headless=true'
 }
 
+task verifyOutputFileName(type: JavaExec, dependsOn: testClasses) {
+    classpath = sourceSets.test.runtimeClasspath
+    main = 'dx.signer.UXOutputFileNameTest'
+    jvmArgs '-Dfile.encoding=UTF-8', '-Djava.awt.headless=true'
+}
+
 check.dependsOn verifyProjectConfiguration, verifyApkPackage, verifyProjectSelection,
-        verifySigningHistory, verifyFileChooser, verifyUiTheme
+        verifySigningHistory, verifyFileChooser, verifyUiTheme, verifyOutputFileName

@@ -720,8 +720,8 @@ public final class UX {
                 ? configured : configured.resolve(outputName)).toString());
     }
 
-    /** Applies the product-specific naming rules used for signed output files. */
-    private static String deriveOutputFileName(String inputName) {
+    /** 根据加固产物的命名规则生成签名后的文件名。 */
+    static String deriveOutputFileName(String inputName) {
         int extensionIndex = inputName.lastIndexOf('.');
         if (extensionIndex < 0) {
             return inputName;
@@ -744,10 +744,9 @@ public final class UX {
             outputName = outputName.substring(0, unsignedMarker) + extension;
         }
 
-        int protectedMarker = outputName.indexOf("_protected");
-        if (protectedMarker >= 0) {
-            outputName = outputName.substring(0, protectedMarker) + extension;
-        }
+        int stemEnd = outputName.length() - extension.length();
+        String stem = outputName.substring(0, stemEnd);
+        outputName = stem.replaceFirst("_protected(?:\\.\\d+)?(?=_|$)", "") + extension;
 
         return outputName;
     }

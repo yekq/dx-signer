@@ -120,7 +120,7 @@ final class SigningHistoryStore {
         if (name.endsWith(".apk")) {
             name = name.substring(0, name.length() - 4);
         }
-        if (name.endsWith("_protected")) {
+        if (name.matches(".*_protected(?:\\.\\d+)?(?:_|$).*")) {
             return "梆梆";
         }
         if (name.startsWith("dx_unsigned")) {

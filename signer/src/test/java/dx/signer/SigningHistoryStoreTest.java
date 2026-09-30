@@ -25,6 +25,8 @@ public final class SigningHistoryStoreTest {
         assertEquals("顶象", SigningHistoryStore.signingTypeForFileName("dx_unsigned_client.apk"));
         assertEquals("爱加密", SigningHistoryStore.signingTypeForFileName("client_unsign.APK"));
         assertEquals("梆梆", SigningHistoryStore.signingTypeForFileName("client_protected.apk"));
+        assertEquals("梆梆", SigningHistoryStore.signingTypeForFileName(
+                "未加固_V1.0_protected.8_Demo试用包V2_0409.apk"));
         assertEquals("未识别", SigningHistoryStore.signingTypeForFileName("client.apk"));
 
         Path directory = Files.createTempDirectory("signing-history-test-");
