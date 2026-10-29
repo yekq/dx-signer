@@ -29,4 +29,5 @@ etc/cfg.properties
 /signing-history.json
 /cfg.properties
 /window-state.json
+/chooser-hidden-files.json
 /dx-signer.zip

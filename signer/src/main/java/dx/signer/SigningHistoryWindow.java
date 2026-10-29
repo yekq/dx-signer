@@ -6,7 +6,9 @@ import javax.swing.JFrame;
 import javax.swing.JLabel;
 import javax.swing.JPanel;
 import javax.swing.JScrollPane;
+import javax.swing.JSplitPane;
 import javax.swing.JTable;
+import javax.swing.RowFilter;
 import javax.swing.RowSorter;
 import javax.swing.SortOrder;
 import javax.swing.SwingUtilities;
@@ -42,12 +44,13 @@ import java.util.TreeSet;
  * create by yekangqi
  * <hr>
  * time: 2026/09/22 11:53
- * description: 在主窗口右侧以可排序列表展示签名记录，并独立记住窗口位置。
+ * description: 在主窗口右侧按项目分组展示可排序的签名记录，并独立记住窗口位置。
  */
 final class SigningHistoryWindow extends JDialog {
     private static final DateTimeFormatter TIME_FORMAT = DateTimeFormatter.ofPattern("yyyy-MM-dd HH:mm:ss")
             .withZone(ZoneId.systemDefault());
     private final HistoryTableModel model = new HistoryTableModel();
+    private final TableRowSorter<HistoryTableModel> sorter = new TableRowSorter<>(model);
     private final JTable table = new JTable(model) {
         @Override
         public String getToolTipText(MouseEvent event) {
@@ -57,6 +60,8 @@ final class SigningHistoryWindow extends JDialog {
     };
     private final JScrollPane scrollPane = new JScrollPane(table);
     private final JLabel summaryLabel = new JLabel();
+    private final SigningHistoryProjectFilter projectFilter =
+            new SigningHistoryProjectFilter(this::applyProjectFilter);
     private final int[] contentWidths = new int[]{180, 110, 85, 180, 70};
     private Map<String, Color> projectColors = Collections.emptyMap();
 
@@ -75,7 +80,14 @@ final class SigningHistoryWindow extends JDialog {
         summaryLabel.setForeground(muted);
         summary.add(summaryLabel, BorderLayout.WEST);
         content.add(summary, BorderLayout.NORTH);
-        content.add(scrollPane, BorderLayout.CENTER);
+        JSplitPane splitPane = new JSplitPane(JSplitPane.HORIZONTAL_SPLIT, projectFilter, scrollPane);
+        splitPane.setBorder(BorderFactory.createEmptyBorder());
+        splitPane.setDividerSize(5);
+        splitPane.setResizeWeight(0);
+        splitPane.setDividerLocation(170);
+        projectFilter.setMinimumSize(new Dimension(120, 0));
+        scrollPane.setMinimumSize(new Dimension(220, 0));
+        content.add(splitPane, BorderLayout.CENTER);
         setContentPane(content);
         table.setBackground(themeColor("Signer.background", table.getBackground()));
         table.setForeground(foreground);
@@ -91,7 +103,6 @@ final class SigningHistoryWindow extends JDialog {
         table.getTableHeader().setReorderingAllowed(false);
         table.setDefaultRenderer(String.class, new HistoryCellRenderer());
         table.setDefaultRenderer(Date.class, new HistoryCellRenderer());
-        TableRowSorter<HistoryTableModel> sorter = new TableRowSorter<>(model);
         sorter.setSortKeys(Collections.singletonList(new RowSorter.SortKey(3, SortOrder.DESCENDING)));
         table.setRowSorter(sorter);
         scrollPane.getViewport().addComponentListener(new ComponentAdapter() {
@@ -125,9 +136,29 @@ final class SigningHistoryWindow extends JDialog {
         model.records = snapshot;
         projectColors = createProjectColors(snapshot, isDark(table.getBackground()));
         model.fireTableDataChanged();
-        long successful = snapshot.stream().filter(SigningHistoryStore.Record::successful).count();
-        summaryLabel.setText("共 " + snapshot.size() + " 条记录  ·  成功 " + successful
-                + "  ·  失败 " + (snapshot.size() - successful));
+        projectFilter.setRecords(snapshot, projectColors);
+        applyProjectFilter();
+    }
+
+    /** 只筛选当前表格视图，项目切换后的统计、排序和列宽使用同一批可见记录。 */
+    private void applyProjectFilter() {
+        sorter.setRowFilter(new RowFilter<HistoryTableModel, Integer>() {
+            @Override
+            public boolean include(Entry<? extends HistoryTableModel, ? extends Integer> entry) {
+                return projectFilter.matches(model.records.get(entry.getIdentifier()));
+            }
+        });
+        table.clearSelection();
+        int total = table.getRowCount();
+        int successful = 0;
+        for (int row = 0; row < total; row++) {
+            if (model.records.get(table.convertRowIndexToModel(row)).successful()) {
+                successful++;
+            }
+        }
+        summaryLabel.setText(projectFilter.selectedGroupLabel() + "  ·  共 " + total
+                + " 条记录  ·  成功 " + successful + "  ·  失败 " + (total - successful));
+        summaryLabel.setToolTipText(summaryLabel.getText());
         measureColumnWidths();
         applyColumnWidths();
     }

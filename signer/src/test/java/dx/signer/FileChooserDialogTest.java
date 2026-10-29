@@ -66,13 +66,30 @@ public final class FileChooserDialogTest {
             assertFalse(FileChooserDialog.isInSigningHistoryApk(bundle.toFile(), historyPaths));
             assertEquals(oldPlain.toFile(), FileChooserDialog.findRecentUnencryptedApk(
                     candidates, historyPaths));
-            System.out.println("APK 选择器测试通过：历史路径筛选、未加固命名与最近创建时间");
+            verifyIndependentFilters(directory, newPlain, bundle);
+            System.out.println("APK 选择器测试通过：历史筛选、自定义隐藏筛选、未加固命名与最近创建时间");
         } finally {
             for (Path file : files) {
                 Files.deleteIfExists(file);
             }
             Files.deleteIfExists(directory);
         }
+    }
+
+    /** 两个隐藏开关各自生效，关闭其中一个不能绕过另一个。 */
+    private static void verifyIndependentFilters(Path directory, Path apk, Path bundle) {
+        for (boolean historyHidden : new boolean[]{false, true}) {
+            for (boolean customHidden : new boolean[]{false, true}) {
+                boolean expected = !historyHidden && !customHidden;
+                assertEquals(expected, FileChooserDialog.isVisibleEntry(
+                        apk.toFile(), true, historyHidden, customHidden));
+                assertTrue(FileChooserDialog.isVisibleEntry(
+                        directory.toFile(), false, historyHidden, customHidden));
+            }
+        }
+        assertFalse(FileChooserDialog.isVisibleEntry(bundle.toFile(), false, false, false));
+        assertFalse(FileChooserDialog.isVisibleEntry(bundle.toFile(), true, false, true));
+        assertTrue(FileChooserDialog.isVisibleEntry(bundle.toFile(), true, false, false));
     }
 
     private static void setTime(Path file, long millis) throws Exception {

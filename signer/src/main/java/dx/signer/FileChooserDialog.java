@@ -29,8 +29,10 @@ import javax.swing.JButton;
 import javax.swing.JCheckBox;
 import javax.swing.JDialog;
 import javax.swing.JLabel;
+import javax.swing.JMenuItem;
 import javax.swing.JOptionPane;
 import javax.swing.JPanel;
+import javax.swing.JPopupMenu;
 import javax.swing.JScrollPane;
 import javax.swing.JTable;
 import javax.swing.JTextField;
@@ -90,21 +92,25 @@ public final class FileChooserDialog extends JDialog {
     };
     private final JTextField addressField = new JTextField();
     private final JCheckBox hideHistoryApksCheckBox = new JCheckBox("隐藏签名历史中的 APK", true);
+    private final JCheckBox hideCustomFilesCheckBox = new JCheckBox("隐藏自定义文件", true);
     private final JButton selectButton = new JButton("选择");
     private final List<String> acceptedExtensions;
     private final Set<String> historyPathKeys;
     private final boolean choosingApk;
+    private final CustomHiddenFileStore customHiddenFiles;
 
     private File currentDirectory;
     private File selectedFile;
     private File recentUnencryptedApk;
 
     private FileChooserDialog(Window owner, File initialPath, String filterDescription,
-                              Set<String> historyPathKeys, String... acceptedExtensions) {
+                              Set<String> historyPathKeys, CustomHiddenFileStore customHiddenFiles,
+                              String... acceptedExtensions) {
         super(owner, "选择文件", ModalityType.APPLICATION_MODAL);
         this.acceptedExtensions = normalizeExtensions(acceptedExtensions);
         this.historyPathKeys = historyPathKeys;
         this.choosingApk = this.acceptedExtensions.contains(".apk");
+        this.customHiddenFiles = customHiddenFiles;
         initializeUi(filterDescription);
         navigateToInitialPath(initialPath);
     }
@@ -113,8 +119,16 @@ public final class FileChooserDialog extends JDialog {
     public static File chooseFile(Component parent, File initialPath, String filterDescription,
                                   Set<String> historyPathKeys, String... acceptedExtensions) {
         Window owner = parent == null ? null : SwingUtilities.getWindowAncestor(parent);
+        CustomHiddenFileStore hiddenFiles;
+        try {
+            hiddenFiles = CustomHiddenFileStore.loadDefault();
+        } catch (IOException exception) {
+            JOptionPane.showMessageDialog(parent, "无法读取自定义隐藏列表：" + exception.getMessage(),
+                    "选择文件", JOptionPane.ERROR_MESSAGE);
+            return null;
+        }
         FileChooserDialog dialog = new FileChooserDialog(
-                owner, initialPath, filterDescription, historyPathKeys, acceptedExtensions);
+                owner, initialPath, filterDescription, historyPathKeys, hiddenFiles, acceptedExtensions);
         dialog.setVisible(true);
         return dialog.selectedFile;
     }
@@ -125,10 +139,15 @@ public final class FileChooserDialog extends JDialog {
         ((JPanel) getContentPane()).setBorder(BorderFactory.createEmptyBorder(10, 10, 10, 10));
         JPanel header = new JPanel(new BorderLayout(0, 8));
         header.add(createAddressBar(), BorderLayout.NORTH);
+        JPanel filters = new JPanel(new FlowLayout(FlowLayout.LEFT, 8, 0));
         if (choosingApk) {
             hideHistoryApksCheckBox.addActionListener(event -> refreshDirectory());
-            header.add(hideHistoryApksCheckBox, BorderLayout.SOUTH);
+            filters.add(hideHistoryApksCheckBox);
         }
+        hideCustomFilesCheckBox.setToolTipText("取消勾选后显示已手动隐藏的文件，可右键取消隐藏");
+        hideCustomFilesCheckBox.addActionListener(event -> refreshDirectory());
+        filters.add(hideCustomFilesCheckBox);
+        header.add(filters, BorderLayout.SOUTH);
         add(header, BorderLayout.NORTH);
         configureTable();
         add(new JScrollPane(fileTable), BorderLayout.CENTER);
@@ -200,6 +219,16 @@ public final class FileChooserDialog extends JDialog {
         fileTable.getSelectionModel().addListSelectionListener(event -> updateSelection());
         fileTable.addMouseListener(new MouseAdapter() {
             @Override
+            public void mousePressed(MouseEvent event) {
+                showFileMenu(event);
+            }
+
+            @Override
+            public void mouseReleased(MouseEvent event) {
+                showFileMenu(event);
+            }
+
+            @Override
             public void mouseClicked(MouseEvent event) {
                 if (event.getClickCount() == 2 && SwingUtilities.isLeftMouseButton(event)) {
                     openSelectedEntry();
@@ -217,6 +246,43 @@ public final class FileChooserDialog extends JDialog {
                 }
             }
         });
+    }
+
+    /** 根据实际右键行操作文件，兼容不同系统的弹出菜单触发时机。 */
+    private void showFileMenu(MouseEvent event) {
+        if (!event.isPopupTrigger()) {
+            return;
+        }
+        int viewRow = fileTable.rowAtPoint(event.getPoint());
+        if (viewRow < 0) {
+            return;
+        }
+        fileTable.setRowSelectionInterval(viewRow, viewRow);
+        File file = tableModel.getFile(fileTable.convertRowIndexToModel(viewRow));
+        if (!file.isFile()) {
+            return;
+        }
+        boolean hidden = customHiddenFiles.contains(file);
+        JMenuItem action = new JMenuItem(hidden ? "取消隐藏" : "隐藏");
+        action.addActionListener(ignored -> setCustomHidden(file, !hidden));
+        JPopupMenu menu = new JPopupMenu();
+        menu.add(action);
+        menu.show(fileTable, event.getX(), event.getY());
+    }
+
+    private void setCustomHidden(File file, boolean hidden) {
+        try {
+            if (hidden) {
+                customHiddenFiles.hide(file);
+            } else {
+                customHiddenFiles.unhide(file);
+            }
+            refreshDirectory();
+            selectFile(file);
+        } catch (IOException exception) {
+            JOptionPane.showMessageDialog(this, "无法保存自定义隐藏列表：" + exception.getMessage(),
+                    "隐藏文件", JOptionPane.ERROR_MESSAGE);
+        }
     }
 
     private void navigateToInitialPath(File initialPath) {
@@ -246,9 +312,11 @@ public final class FileChooserDialog extends JDialog {
             showPathError("路径不存在: " + rawPath);
         } else if (target.isDirectory()) {
             loadDirectory(target);
-        } else if (accepts(target) && !shouldHideHistoryApk(target)) {
+        } else if (accepts(target) && !shouldHideHistoryApk(target) && !shouldHideCustomFile(target)) {
             loadDirectory(target.getParentFile());
             selectFile(target);
+        } else if (shouldHideCustomFile(target)) {
+            showPathError("该文件已被自定义隐藏，请取消勾选“隐藏自定义文件”后选择");
         } else if (shouldHideHistoryApk(target)) {
             showPathError("该 APK 已在签名历史中，请取消勾选隐藏选项后选择");
         } else {
@@ -280,7 +348,8 @@ public final class FileChooserDialog extends JDialog {
         File[] files = fileSystemView.getFiles(directory, true);
         List<File> visibleFiles = new ArrayList<>();
         for (File file : files) {
-            if (file.isDirectory() || (accepts(file) && !shouldHideHistoryApk(file))) {
+            if (isVisibleEntry(file, accepts(file), shouldHideHistoryApk(file),
+                    shouldHideCustomFile(file))) {
                 visibleFiles.add(file);
             }
         }
@@ -309,6 +378,16 @@ public final class FileChooserDialog extends JDialog {
     private boolean shouldHideHistoryApk(File file) {
         return choosingApk && hideHistoryApksCheckBox.isSelected()
                 && isInSigningHistoryApk(file, historyPathKeys);
+    }
+
+    private boolean shouldHideCustomFile(File file) {
+        return hideCustomFilesCheckBox.isSelected() && customHiddenFiles.contains(file);
+    }
+
+    /** 目录保持可导航；文件同时满足类型和两个独立隐藏条件才显示。 */
+    static boolean isVisibleEntry(File file, boolean accepted, boolean historyHidden,
+                                  boolean customHidden) {
+        return file.isDirectory() || (accepted && !historyHidden && !customHidden);
     }
 
     static boolean isInSigningHistoryApk(File file, Set<String> historyPathKeys) {
@@ -413,6 +492,10 @@ public final class FileChooserDialog extends JDialog {
                 : tableModel.getFile(fileTable.convertRowIndexToModel(viewRow));
         if (candidate.isDirectory()) {
             loadDirectory(candidate);
+        } else if (shouldHideCustomFile(candidate)) {
+            showPathError("该文件已被自定义隐藏，请取消勾选“隐藏自定义文件”后选择");
+        } else if (shouldHideHistoryApk(candidate)) {
+            showPathError("该 APK 已在签名历史中，请取消勾选隐藏选项后选择");
         } else if (candidate.isFile() && accepts(candidate)) {
             selectedFile = candidate;
             dispose();

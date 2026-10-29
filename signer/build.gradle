@@ -100,5 +100,18 @@ task verifySigningSchemes(type: JavaExec, dependsOn: testClasses) {
     jvmArgs '-Dfile.encoding=UTF-8', '-Djava.awt.headless=true'
 }
 
+task verifyCustomHiddenFiles(type: JavaExec, dependsOn: testClasses) {
+    classpath = sourceSets.test.runtimeClasspath
+    main = 'dx.signer.CustomHiddenFileStoreTest'
+    jvmArgs '-Dfile.encoding=UTF-8', '-Djava.awt.headless=true'
+}
+
+task verifyHistoryProjectFilter(type: JavaExec, dependsOn: testClasses) {
+    classpath = sourceSets.test.runtimeClasspath
+    main = 'dx.signer.SigningHistoryProjectFilterTest'
+    jvmArgs '-Dfile.encoding=UTF-8', '-Djava.awt.headless=true'
+}
+
 check.dependsOn verifyProjectConfiguration, verifyApkPackage, verifyProjectSelection,
-        verifySigningHistory, verifyFileChooser, verifyUiTheme, verifyOutputFileName, verifySigningSchemes
+        verifySigningHistory, verifyFileChooser, verifyUiTheme, verifyOutputFileName, verifySigningSchemes,
+        verifyCustomHiddenFiles, verifyHistoryProjectFilter
